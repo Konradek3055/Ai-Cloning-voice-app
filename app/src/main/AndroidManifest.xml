@@ -6,6 +6,8 @@
     <application
         android:allowBackup="false"
         android:label="KinoTTS Studio"
+        android:icon="@drawable/ic_kinotts_launcher"
+        android:roundIcon="@drawable/ic_kinotts_launcher"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity

@@ -45,6 +45,21 @@ data class XttsVoice internal constructor(
 
 data class XttsProgress(val fraction: Float, val stage: String)
 
+/** Configurable XTTS GPT sampling parameters. */
+data class XttsSamplingSettings(
+    val temperature: Float = 0.75f,
+    val topK: Int = 50,
+    val topP: Float = 0.85f,
+    val repetitionPenalty: Float = 1.1f
+) {
+    fun validated() = copy(
+        temperature = temperature.takeIf { it.isFinite() }?.coerceIn(0.1f, 2.0f) ?: 0.75f,
+        topK = topK.coerceIn(1, 100),
+        topP = topP.takeIf { it.isFinite() }?.coerceIn(0.1f, 1.0f) ?: 0.85f,
+        repetitionPenalty = repetitionPenalty.takeIf { it.isFinite() }?.coerceIn(1.0f, 2.0f) ?: 1.1f
+    )
+}
+
 data class XttsGptConfig(
     val layers: Int = 30,
     val embedding: Int = 1024,
@@ -231,12 +246,13 @@ class XttsSynthesizer(
         language: String,
         referenceWav: File,
         speed: Float = 1f,
+        sampling: XttsSamplingSettings = XttsSamplingSettings(),
         onProgress: (Float) -> Unit = {}
     ): File {
         cancelled.set(false)
         open()
         val voice = createVoice(referenceWav) { p -> onProgress(p.fraction) }
-        return synthesize(text, language, voice, speed) { p -> onProgress(p) }
+        return synthesize(text, language, voice, speed, sampling) { p -> onProgress(p) }
     }
 
     /** Synthesis with an already-computed voice profile. */
@@ -245,6 +261,7 @@ class XttsSynthesizer(
         language: String,
         voice: XttsVoice,
         speed: Float = 1f,
+        sampling: XttsSamplingSettings = XttsSamplingSettings(),
         onProgress: (Float) -> Unit = {}
     ): File {
         cancelled.set(false)
@@ -277,7 +294,7 @@ class XttsSynthesizer(
 
         for (iteration in 0 until maximum) {
             ensureActive()
-            val selected = sample(logits, history)
+            val selected = sample(logits, history, sampling.validated())
             if (selected == config.stopAudio) break
             if (selected !in 0 until 1024) error("GPT wygenerował nieprawidłowy kod audio: $selected")
             generatedIds.add(selected)
@@ -370,32 +387,47 @@ class XttsSynthesizer(
         }
     }
 
-    private fun sample(source: FloatArray, history: List<Int>): Int {
+    private fun sample(source: FloatArray, history: List<Int>, settings: XttsSamplingSettings): Int {
+        val cfg = settings.validated()
         val scores = source.copyOf(config.audioTokens)
-        val seen = HashSet<Int>(history)
-        for (id in seen) if (id in scores.indices) scores[id] = if (scores[id] < 0f) scores[id] * 10f else scores[id] / 10f
-        for (i in scores.indices) scores[i] /= 0.75f
+        val penalty = cfg.repetitionPenalty
+        if (penalty > 1f) {
+            for (id in history.toHashSet()) {
+                if (id in scores.indices) {
+                    scores[id] = if (scores[id] < 0f) scores[id] * penalty else scores[id] / penalty
+                }
+            }
+        }
+        for (i in scores.indices) scores[i] /= cfg.temperature
+
         val sorted = scores.indices.sortedByDescending { scores[it] }
-        val allowed = BooleanArray(scores.size)
-        for (i in 0 until min(50, sorted.size)) allowed[sorted[i]] = true
-        val maxLogit = scores.indices.filter { allowed[it] }.maxOf { scores[it] }
-        var sum = 0.0
+        val candidates = sorted.take(cfg.topK.coerceIn(1, sorted.size))
+        val maxLogit = candidates.firstOrNull()?.let { scores[it] } ?: return config.stopAudio
         val probs = DoubleArray(scores.size)
-        for (i in scores.indices) if (allowed[i]) { probs[i] = exp((scores[i] - maxLogit).toDouble()); sum += probs[i] }
-        if (sum <= 0.0 || !sum.isFinite()) return sorted.first()
-        for (i in probs.indices) probs[i] /= sum
-        val nucleus = sorted.filter { allowed[it] }
+        var sum = 0.0
+        for (id in candidates) {
+            val probability = exp((scores[id] - maxLogit).toDouble())
+            probs[id] = probability
+            sum += probability
+        }
+        if (sum <= 0.0 || !sum.isFinite()) return candidates.first()
+        for (id in candidates) probs[id] /= sum
+
+        val keep = ArrayList<Int>()
         var cumulative = 0.0
-        val keep = HashSet<Int>()
-        for (id in nucleus) {
-            keep.add(id); cumulative += probs[id]
-            if (cumulative >= 0.85) break
+        for (id in candidates) {
+            keep.add(id)
+            cumulative += probs[id]
+            if (cumulative >= cfg.topP) break
         }
         val keptSum = keep.sumOf { probs[it] }
-        if (keptSum <= 0.0) return sorted.first()
+        if (keptSum <= 0.0 || !keptSum.isFinite()) return candidates.first()
         var draw = random.nextDouble() * keptSum
-        for (id in sorted) if (id in keep) { draw -= probs[id]; if (draw <= 0.0) return id }
-        return keep.first()
+        for (id in keep) {
+            draw -= probs[id]
+            if (draw <= 0.0) return id
+        }
+        return keep.last()
     }
 
     private fun runVocoder(latents: FloatArray, speaker: FloatArray): FloatArray {
