@@ -58,7 +58,9 @@ jobs:
           cargo install cargo-ndk --locked
 
           echo "Kompilowanie tokenizera dla ARM64..."
-          cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --manifest-path native/xtts-tokenizer/Cargo.toml --release
+          cd native/xtts-tokenizer
+          cargo ndk -t arm64-v8a -o ../../app/src/main/jniLibs build --release
+          cd ../..
 
           LIB="app/src/main/jniLibs/arm64-v8a/libkinotts_tokenizer.so"
 
