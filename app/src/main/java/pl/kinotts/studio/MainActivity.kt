@@ -41,6 +41,7 @@ import pl.kinotts.studio.models.ModelManager
 import pl.kinotts.studio.models.XttsModelManager
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
+import pl.kinotts.studio.xtts.XttsSynthesizer
 import java.io.File
 import java.util.Locale
 
@@ -65,6 +66,7 @@ private fun KinoTtsApp() {
     val analyzer = remember { AudioAnalyzer(context.applicationContext) }
     val profileStore = remember { VoiceProfileStore(context.applicationContext) }
     val supertonic = remember { SupertonicEngine(File(context.filesDir, "audio")) }
+    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), File(context.cacheDir, "xtts-output")) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
@@ -75,6 +77,8 @@ private fun KinoTtsApp() {
     var profileName by remember { mutableStateOf("Mój głos") }
     var consentConfirmed by remember { mutableStateOf(false) }
     var profiles by remember { mutableStateOf(profileStore.list()) }
+    var xttsChosenProfileId by remember { mutableStateOf("") }
+    var xttsSynthesizing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Gotowy") }
     var hfToken by remember { mutableStateOf("") }
     var xttsInstalled by remember { mutableStateOf(xttsModels.isInstalled()) }
@@ -167,6 +171,7 @@ private fun KinoTtsApp() {
         onDispose {
             player?.release()
             supertonic.close()
+            xttsRuntime.close()
         }
     }
 
@@ -228,102 +233,140 @@ private fun KinoTtsApp() {
 
                                 if (engine == "XTTS-v2") {
                                     Text(
-                                        "XTTS-v2: synteza i klonowanie nie są jeszcze podłączone. Poniżej działa przygotowanie próbki: dekodowanie, analiza jakości i zapis profilu w pamięci aplikacji.",
-                                        color = MaterialTheme.colorScheme.error
+                                        "XTTS-v2 działa lokalnie przez ONNX Runtime. Dodaj własną próbkę albo nagranie użyte za zgodą właściciela, zapisz profil i generuj mowę offline.",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     OutlinedButton(
                                         onClick = { pickAudio.launch(arrayOf("audio/*", "video/mp4")) },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        enabled = !busy
+                                        modifier = Modifier.fillMaxWidth(), enabled = !busy
                                     ) {
                                         Icon(Icons.Default.AudioFile, contentDescription = null)
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("Wybierz MP3 / MP4 / WAV")
+                                        Spacer(Modifier.width(8.dp)); Text("Wybierz MP3 / MP4 / WAV")
                                     }
                                     Text(selectedAudioName, style = MaterialTheme.typography.bodySmall)
                                     Button(
                                         onClick = {
                                             val uri = selectedAudio
                                             if (uri != null) scope.launch {
-                                                busy = true
-                                                progress = 0f
-                                                status = "Dekoduję i analizuję próbkę…"
+                                                busy = true; progress = 0f; status = "Dekoduję próbkę audio…"
                                                 try {
                                                     analysis = withContext(Dispatchers.IO) {
-                                                        analyzer.analyze(uri) { value -> progress = value }
+                                                        analyzer.analyze(uri) { value -> scope.launch { progress = value } }
                                                     }
-                                                    status = "Analiza zakończona. Próbka została przetworzona lokalnie."
+                                                    status = "Próbka gotowa. Zapisz ją jako profil głosu."
                                                 } catch (e: Exception) {
                                                     analysis = null
                                                     status = "Błąd analizy: ${e.message ?: e::class.java.simpleName}"
-                                                } finally {
-                                                    busy = false
-                                                }
+                                                } finally { busy = false }
                                             }
-                                        },
-                                        enabled = selectedAudio != null && !busy,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) { Text(if (busy) "Analizuję…" else "Analizuj nagranie") }
-
+                                        }, enabled = selectedAudio != null && !busy, modifier = Modifier.fillMaxWidth()
+                                    ) { Text(if (busy) "Analizuję…" else "Analizuj próbkę") }
                                     analysis?.let { result ->
                                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                                             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                                Text("Wynik analizy", style = MaterialTheme.typography.titleMedium)
-                                                Text("Czas: ${formatSeconds(result.durationSeconds)} • ${result.sampleRate} Hz • źródłowo ${result.sourceChannels} kan.")
-                                                Text("RMS: ${formatNumber(result.rmsDbfs)} dBFS • szczyt: ${formatNumber(result.peak)}")
-                                                Text("Próbki obcięte: ${formatNumber(result.clippingPercent)}% • cisza: ${formatNumber(result.silencePercent)}%")
-                                                Text("Zdekodowano ${result.monoSamples} próbek mono do WAV PCM16.", style = MaterialTheme.typography.bodySmall)
+                                                Text("Parametry próbki", style = MaterialTheme.typography.titleMedium)
+                                                Text("Czas: ${formatSeconds(result.durationSeconds)} • ${result.sampleRate} Hz • ${result.sourceChannels} kan.")
+                                                Text("RMS: ${formatNumber(result.rmsDbfs)} dBFS • clipping: ${formatNumber(result.clippingPercent)}% • cisza: ${formatNumber(result.silencePercent)}%")
                                             }
                                         }
                                         OutlinedTextField(
-                                            value = profileName,
-                                            onValueChange = { profileName = it },
-                                            label = { Text("Nazwa profilu głosu") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            singleLine = true
+                                            value = profileName, onValueChange = { profileName = it },
+                                            label = { Text("Nazwa profilu głosu") }, modifier = Modifier.fillMaxWidth(), singleLine = true
                                         )
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Checkbox(
-                                                checked = consentConfirmed,
-                                                onCheckedChange = { consentConfirmed = it }
-                                            )
-                                            Text(
-                                                "To mój głos albo mam wyraźną zgodę właściciela nagrania.",
-                                                style = MaterialTheme.typography.bodySmall
-                                            )
+                                            Checkbox(checked = consentConfirmed, onCheckedChange = { consentConfirmed = it })
+                                            Text("To mój głos albo mam wyraźną zgodę właściciela nagrania.", style = MaterialTheme.typography.bodySmall)
                                         }
                                         Button(
                                             onClick = {
                                                 scope.launch {
                                                     busy = true
                                                     try {
-                                                        withContext(Dispatchers.IO) {
-                                                            profileStore.save(
-                                                                profileName,
-                                                                result,
-                                                                language,
-                                                                consentConfirmed
-                                                            )
+                                                        val saved = withContext(Dispatchers.IO) {
+                                                            profileStore.save(profileName, result, language, consentConfirmed)
                                                         }
                                                         profiles = withContext(Dispatchers.IO) { profileStore.list() }
+                                                        xttsChosenProfileId = saved.id
                                                         consentConfirmed = false
-                                                        status = "Zapisano lokalną próbkę głosu. Profil nie jest jeszcze podłączony do syntezy XTTS."
+                                                        status = "Profil ${saved.name} zapisany. Możesz go wybrać do klonowania głosu."
                                                     } catch (e: Exception) {
                                                         status = "Błąd zapisu profilu: ${e.message ?: e::class.java.simpleName}"
-                                                    } finally {
-                                                        busy = false
-                                                    }
+                                                    } finally { busy = false }
                                                 }
-                                            },
-                                            enabled = !busy && consentConfirmed && profileName.trim().length in 2..40,
+                                            }, enabled = !busy && consentConfirmed && profileName.trim().length in 2..40,
                                             modifier = Modifier.fillMaxWidth()
-                                        ) { Text("Zapisz próbkę jako profil") }
+                                        ) { Text("Zapisz profil głosu") }
                                     }
-                                    Text(
-                                        "Import i analiza nie klonują głosu. Właściwy pipeline XTTS ONNX wymaga jeszcze natywnej integracji i testu ARM64.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                                    Text("Tekst do wygenerowania", style = MaterialTheme.typography.titleMedium)
+                                    OutlinedTextField(
+                                        value = text, onValueChange = { text = it }, label = { Text("Tekst po polsku lub w innym języku XTTS") },
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp), minLines = 3
                                     )
+                                    var xttsLanguageExpanded by remember { mutableStateOf(false) }
+                                    ExposedDropdownMenuBox(expanded = xttsLanguageExpanded, onExpandedChange = { xttsLanguageExpanded = it }) {
+                                        OutlinedTextField(
+                                            value = language, onValueChange = {}, readOnly = true,
+                                            modifier = Modifier.menuAnchor().fillMaxWidth(), label = { Text("Język XTTS") }
+                                        )
+                                        ExposedDropdownMenu(expanded = xttsLanguageExpanded, onDismissRequest = { xttsLanguageExpanded = false }) {
+                                            listOf("pl", "en", "de", "fr", "es", "it", "pt", "cs", "ru", "nl", "tr", "zh", "ja", "hu", "ko", "ar", "hi").forEach { lang ->
+                                                DropdownMenuItem(text = { Text(lang) }, onClick = { language = lang; xttsLanguageExpanded = false })
+                                            }
+                                        }
+                                    }
+                                    val selectedXttsProfile = profiles.firstOrNull { it.id == xttsChosenProfileId } ?: profiles.firstOrNull()
+                                    var xttsProfileExpanded by remember { mutableStateOf(false) }
+                                    ExposedDropdownMenuBox(expanded = xttsProfileExpanded, onExpandedChange = { xttsProfileExpanded = it }) {
+                                        OutlinedTextField(
+                                            value = selectedXttsProfile?.name ?: "Brak zapisanego profilu",
+                                            onValueChange = {}, readOnly = true,
+                                            modifier = Modifier.menuAnchor().fillMaxWidth(), label = { Text("Głos do sklonowania") }
+                                        )
+                                        ExposedDropdownMenu(expanded = xttsProfileExpanded, onDismissRequest = { xttsProfileExpanded = false }) {
+                                            profiles.forEach { profile ->
+                                                DropdownMenuItem(text = { Text(profile.name) }, onClick = {
+                                                    xttsChosenProfileId = profile.id; xttsProfileExpanded = false
+                                                })
+                                            }
+                                        }
+                                    }
+                                    Text("Tempo: ${formatNumber(speed)}×")
+                                    Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.7f..1.4f)
+                                    if (!xttsInstalled) {
+                                        Text("Najpierw pobierz XTTS-v2 w zakładce Modele.", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    if (profiles.isEmpty()) {
+                                        Text("Najpierw zaimportuj próbkę i zapisz profil głosu.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val selected = selectedXttsProfile
+                                            if (selected != null) scope.launch {
+                                                busy = true; xttsSynthesizing = true; progress = 0f; status = "Uruchamiam XTTS-v2…"
+                                                try {
+                                                    val wav = withContext(Dispatchers.IO) {
+                                                        xttsRuntime.synthesize(text, language, File(selected.wavPath), speed) { value ->
+                                                            scope.launch { progress = value }
+                                                        }
+                                                    }
+                                                    output = wav
+                                                    status = "XTTS wygenerował WAV: ${wav.name}"
+                                                } catch (e: Exception) {
+                                                    status = "Błąd XTTS: ${e.message ?: e::class.java.simpleName}"
+                                                } finally { xttsSynthesizing = false; busy = false }
+                                            }
+                                        },
+                                        enabled = !busy && xttsInstalled && selectedXttsProfile != null && text.isNotBlank(),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text(if (busy) "Generuję głos…" else "Generuj mowę XTTS") }
+                                    if (xttsSynthesizing) {
+                                        OutlinedButton(
+                                            onClick = { xttsRuntime.cancel(); status = "Wysłano żądanie anulowania XTTS…" },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("Anuluj generowanie") }
+                                    }
                                 } else {
                                     OutlinedTextField(
                                         value = text,
@@ -451,7 +494,7 @@ private fun KinoTtsApp() {
                             profiles.forEach { profile -> VoiceProfileCard(profile) }
                         }
                         Text(
-                            "Profile zawierają lokalne nagrania referencyjne i analizę. Nie są jeszcze używane przez silnik XTTS.",
+                            "Zapisane próbki mogą służyć jako profile referencyjne dla lokalnego silnika XTTS-v2.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

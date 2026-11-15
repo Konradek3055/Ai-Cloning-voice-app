@@ -71,6 +71,9 @@ object XtTsOnnxRuntime {
         }
     }
 
+    /** Public environment accessor for the XTTS inference layer. */
+    fun environment(): OrtEnvironment = requireEnvironment()
+
     private fun requireEnvironment(): OrtEnvironment {
         val result = diagnose()
         check(result.ready) { result.message }
