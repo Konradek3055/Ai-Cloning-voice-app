@@ -19,4 +19,4 @@ credentials, or personal data to this public repository.
 
 ## Information
 
-This project is created with help from ChatGPT and Claude
+This project is created with help from ChatGPT and Claude.
