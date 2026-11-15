@@ -1,12 +1,31 @@
-<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:fillColor="#101827" android:pathData="M0,0h108v108h-108z" />
-    <path android:fillColor="#1D3557" android:pathData="M12,12h84a8,8 0,0 1,8 8v68a8,8 0,0 1,-8 8h-84a8,8 0,0 1,-8 -8v-68a8,8 0,0 1,8 -8z" />
-    <path android:fillColor="#56D6C2" android:pathData="M18,50h7v8h-7zM30,39h7v30h-7zM42,29h7v50h-7zM54,40h7v28h-7zM66,33h7v42h-7zM78,45h7v18h-7z" />
-    <path android:fillColor="#F4F7FB" android:pathData="M20,23h5v62h-5zM25,49l24,-26h8l-24,27 27,35h-9l-26,-34z" />
-    <path android:fillColor="#F4F7FB" android:pathData="M66,23h6v26l21,-26h8l-24,29 25,33h-8l-22,-29v29h-6z" />
+
+    <!-- Background -->
+    <path
+        android:fillColor="#101827"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Rounded inset panel -->
+    <path
+        android:fillColor="#1D3557"
+        android:pathData="M18,8 H90 Q100,8 100,18 V90 Q100,100 90,100 H18 Q8,100 8,90 V18 Q8,8 18,8 Z" />
+
+    <!-- Microphone body -->
+    <path
+        android:fillColor="#56D6C2"
+        android:pathData="M54,24 C46.8,24 43,29 43,36 V53 C43,60 47.5,65 54,65 C60.5,65 65,60 65,53 V36 C65,29 61.2,24 54,24 Z" />
+
+    <!-- Microphone stand -->
+    <path
+        android:fillColor="#F4F7FB"
+        android:pathData="M37,49 H42 V53 C42,61 47,67 54,67 C61,67 66,61 66,53 V49 H71 V53 C71,64 64,71 56.5,72 V79 H65 V84 H43 V79 H51.5 V72 C43,71 37,64 37,53 Z" />
+
+    <!-- Sound wave bars -->
+    <path
+        android:fillColor="#56D6C2"
+        android:pathData="M25,42 H30 V62 H25 Z M78,42 H83 V62 H78 Z M17,48 H21 V56 H17 Z M87,48 H91 V56 H87 Z" />
 </vector>
