@@ -22,7 +22,7 @@ pub extern "system" fn Java_pl_kinotts_studio_xtts_HFTokenizer_nativeCreateToken
 
 #[no_mangle]
 pub extern "system" fn Java_pl_kinotts_studio_xtts_HFTokenizer_nativeEncode(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _this: JObject,
     tokenizer_ptr: jlong,
     text: JString,
@@ -58,7 +58,7 @@ pub extern "system" fn Java_pl_kinotts_studio_xtts_HFTokenizer_nativeEncode(
 
 #[no_mangle]
 pub extern "system" fn Java_pl_kinotts_studio_xtts_HFTokenizer_nativeTokenId(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _this: JObject,
     tokenizer_ptr: jlong,
     token: JString,
