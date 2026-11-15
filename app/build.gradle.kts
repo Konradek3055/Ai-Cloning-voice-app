@@ -4,6 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val ciKeystorePath = System.getenv("KINOTTS_KEYSTORE_PATH")
+val ciStorePassword = System.getenv("KINOTTS_STORE_PASSWORD")
+val ciKeyAlias = System.getenv("KINOTTS_KEY_ALIAS")
+val ciKeyPassword = System.getenv("KINOTTS_KEY_PASSWORD")
+
+val useCiSigning =
+    !ciKeystorePath.isNullOrBlank() &&
+    !ciStorePassword.isNullOrBlank() &&
+    !ciKeyAlias.isNullOrBlank() &&
+    !ciKeyPassword.isNullOrBlank()
+
 android {
     namespace = "pl.kinotts.studio"
     compileSdk = 35
@@ -15,6 +26,25 @@ android {
         versionCode = 3
         versionName = "2.1.0-standalone"
         ndk { abiFilters += setOf("arm64-v8a") }
+    }
+
+    signingConfigs {
+        if (useCiSigning) {
+            create("ci") {
+                storeFile = file(ciKeystorePath!!)
+                storePassword = ciStorePassword
+                keyAlias = ciKeyAlias
+                keyPassword = ciKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            if (useCiSigning) {
+                signingConfig = signingConfigs.getByName("ci")
+            }
+        }
     }
 
     buildFeatures { compose = true }
