@@ -9,7 +9,7 @@ Offline Android text-to-speech using Supertonic 3.
 - Audio import and local quality analysis are available.
 - Reference recordings can be stored locally.
 - ONNX Runtime Android 1.32.0 Java/JNI runtime check and XTTS four-session loader are added.
-- XTTS-v2 end-to-end voice cloning is NOT implemented yet; BPE, audio features, GPT KV-cache and HiFi-GAN orchestration remain.
+- XTTS-v2 end-to-end voice cloning is implemented and it's in optimizind state right now.
 - Current inference backend: CPU. NPU acceleration is in testing and doesn't always work.
 
 ## Privacy
