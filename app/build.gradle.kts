@@ -2,7 +2,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("org.mozilla.rust-android-gradle.rust-android")
 }
 
 val ciKeystorePath = System.getenv("KINOTTS_KEYSTORE_PATH")
@@ -93,13 +92,4 @@ dependencies {
 
 
     implementation("org.apache.commons:commons-compress:1.28.0")
-}
-
-cargo {
-    module = "../native/xtts-tokenizer"
-    libname = "kinotts_tokenizer"
-    prebuiltToolchains = true
-    targets = listOf("arm64")
-    profile = "release"
-    apiLevel = 28
 }
