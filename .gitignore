@@ -55,3 +55,9 @@ audio/
 !app/src/main/java/pl/kinotts/studio/models/
 !app/src/main/java/pl/kinotts/studio/models/**
 /signing/
+
+# Local KinoTTS backups
+.kinotts-backup-*/
+_KinoTTS_*Backup*/
+_XTTS_*BACKUP*/
+*.bak
