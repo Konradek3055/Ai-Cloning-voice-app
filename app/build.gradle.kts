@@ -75,10 +75,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    // Sherpa-ONNX 2.0.1 Android package. Keep the API/JVM artifact included:
-    // OfflineTts and the Supertonic configuration classes are required at runtime.
-    // Its AAR contains the native Sherpa library and the matching ONNX Runtime 1.28.2.
-    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1")
+    // The Android AAR already contains the Sherpa JVM API, including OfflineTts.
+    // Exclude its duplicate transitive JVM JAR; keeping both causes duplicate classes.
+    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {
+        exclude(module = "sherpa-onnx-jvm")
+    }
 
     // XTTS uses the ONNX Runtime Java API. This AAR also contains libonnxruntime.so;
     // pickFirst below intentionally keeps the Sherpa 2.0.1 native runtime above.
