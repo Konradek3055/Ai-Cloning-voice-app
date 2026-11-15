@@ -93,18 +93,21 @@ private fun KinoTtsApp() {
     var profileName by remember { mutableStateOf("Mój głos") }
     var consentConfirmed by remember { mutableStateOf(false) }
     var profiles by remember { mutableStateOf(profileStore.list()) }
-    var xttsChosenProfileId by remember { mutableStateOf("") }
+    val voiceGroups = profiles.groupBy { it.groupId }.values.toList()
+    var xttsChosenProfileId by remember { mutableStateOf(profiles.firstOrNull()?.groupId.orEmpty()) }
     var xttsSynthesizing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Gotowy") }
-    var statusVisible by remember { mutableStateOf(true) }
+    var statusVisible by remember { mutableStateOf(false) }
     var pendingModelDelete by remember { mutableStateOf<String?>(null) }
+    var appendToProfileId by remember { mutableStateOf("") }
+    var computeBackendStatus by remember { mutableStateOf("Brak aktywnej inferencji — oczekiwanie na generowanie") }
     var hfToken by remember { mutableStateOf(HfTokenStore.load(context).orEmpty()) }
     var xttsInstalled by remember { mutableStateOf(xttsModels.isInstalled()) }
     var xttsModelStatus by remember {
-        mutableStateOf(if (xttsInstalled) "Model XTTS jest zainstalowany." else "Model XTTS nie jest jeszcze pobrany.")
+        mutableStateOf(if (xttsInstalled) "Model gotowy" else "Model do pobrania")
     }
     var supertonicModelStatus by remember {
-        mutableStateOf(if (models.isSupertonicInstalled()) "Model jest zainstalowany." else "Model nie jest jeszcze pobrany.")
+        mutableStateOf(if (models.isSupertonicInstalled()) "Model gotowy" else "Model do pobrania")
     }
     var xttsGraphInfo by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -162,10 +165,10 @@ private fun KinoTtsApp() {
     }
 
     LaunchedEffect(status, busy) {
-        statusVisible = true
-        if (!busy && status != "Gotowy") {
-            delay(6500)
-            if (!busy) statusVisible = false
+        statusVisible = status.isNotBlank() && status != "Gotowy"
+        if (!busy && statusVisible) {
+            delay(5000)
+            statusVisible = false
         }
     }
 
@@ -234,10 +237,10 @@ private fun KinoTtsApp() {
                                 if (targetModel == "xtts") {
                                     xttsInstalled = false
                                     xttsGraphInfo = ""
-                                    xttsModelStatus = "Model XTTS nie jest jeszcze pobrany."
+                                    xttsModelStatus = "Model do pobrania"
                                     status = "Usunięto model XTTS-v2."
                                 } else {
-                                    supertonicModelStatus = "Model Supertonic nie jest jeszcze pobrany."
+                                    supertonicModelStatus = "Model do pobrania"
                                     status = "Usunięto model Supertonic 3."
                                 }
                             } catch (e: Exception) {
@@ -297,6 +300,11 @@ private fun KinoTtsApp() {
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Obliczenia", modifier = Modifier.width(88.dp), fontWeight = FontWeight.Bold, maxLines = 1)
+                                Text(computeBackendStatus, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
                             if (busy) {
                                 LinearProgressIndicator(
                                     progress = { progress.coerceIn(0f, 1f) },
@@ -308,6 +316,7 @@ private fun KinoTtsApp() {
                             }
                         }
                     }
+                    if (statusVisible || busy) StatusCard(status)
                     NavigationBar {
                         Screen.entries.forEach { item ->
                             val icon = when (item) {
@@ -407,9 +416,37 @@ private fun KinoTtsApp() {
                                                 Text("RMS: ${formatNumber(result.rmsDbfs)} dBFS • clipping: ${formatNumber(result.clippingPercent)}% • cisza: ${formatNumber(result.silencePercent)}%")
                                             }
                                         }
+                                        var appendGroupExpanded by remember { mutableStateOf(false) }
+                                        val appendGroup = voiceGroups.firstOrNull { it.first().groupId == appendToProfileId }
+                                        ExposedDropdownMenuBox(expanded = appendGroupExpanded,
+                                            onExpandedChange = { appendGroupExpanded = it }) {
+                                            OutlinedTextField(
+                                                value = appendGroup?.first()?.name ?: "Utwórz nowy głos",
+                                                onValueChange = {}, readOnly = true,
+                                                modifier = Modifier.menuAnchor().fillMaxWidth(),
+                                                label = { Text("Przypisz próbkę do głosu") }
+                                            )
+                                            ExposedDropdownMenu(expanded = appendGroupExpanded,
+                                                onDismissRequest = { appendGroupExpanded = false }) {
+                                                DropdownMenuItem(text = { Text("+ Utwórz nowy głos") }, onClick = {
+                                                    appendToProfileId = ""; appendGroupExpanded = false
+                                                })
+                                                voiceGroups.forEach { group ->
+                                                    DropdownMenuItem(
+                                                        text = { Text("${group.first().name} (${group.size} próbek)") },
+                                                        onClick = {
+                                                            appendToProfileId = group.first().groupId
+                                                            profileName = group.first().name
+                                                            appendGroupExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
                                         OutlinedTextField(
                                             value = profileName, onValueChange = { profileName = it },
-                                            label = { Text("Nazwa profilu głosu") }, modifier = Modifier.fillMaxWidth(), singleLine = true
+                                            label = { Text("Nazwa nowego głosu") }, modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true, enabled = appendGroup == null
                                         )
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Checkbox(checked = consentConfirmed, onCheckedChange = { consentConfirmed = it })
@@ -420,13 +457,19 @@ private fun KinoTtsApp() {
                                                 scope.launch {
                                                     busy = true
                                                     try {
+                                                        val targetGroup = appendToProfileId.takeIf { id ->
+                                                            voiceGroups.any { it.first().groupId == id }
+                                                        }
                                                         val saved = withContext(Dispatchers.IO) {
-                                                            profileStore.save(profileName, result, language, consentConfirmed)
+                                                            profileStore.save(profileName, result, language, consentConfirmed, targetGroup)
                                                         }
                                                         profiles = withContext(Dispatchers.IO) { profileStore.list() }
-                                                        xttsChosenProfileId = saved.id
+                                                        xttsChosenProfileId = saved.groupId
                                                         consentConfirmed = false
-                                                        status = "Profil ${saved.name} zapisany. Możesz go wybrać do klonowania głosu."
+                                                        status = if (targetGroup == null)
+                                                            "Utworzono głos ${saved.name} i dodano pierwszą próbkę."
+                                                        else
+                                                            "Dodano próbkę do głosu ${saved.name}. Łącznie: ${profiles.count { it.groupId == saved.groupId }}."
                                                     } catch (e: Exception) {
                                                         status = "Błąd zapisu profilu: ${e.message ?: e::class.java.simpleName}"
                                                     } finally { busy = false }
@@ -454,19 +497,27 @@ private fun KinoTtsApp() {
                                             }
                                         }
                                     }
-                                    val selectedXttsProfile = profiles.firstOrNull { it.id == xttsChosenProfileId } ?: profiles.firstOrNull()
+                                    val selectedXttsProfile = voiceGroups.firstOrNull { it.first().groupId == xttsChosenProfileId }?.first()
+                                        ?: voiceGroups.firstOrNull()?.first()
                                     var xttsProfileExpanded by remember { mutableStateOf(false) }
                                     ExposedDropdownMenuBox(expanded = xttsProfileExpanded, onExpandedChange = { xttsProfileExpanded = it }) {
                                         OutlinedTextField(
-                                            value = selectedXttsProfile?.name ?: "Brak zapisanego profilu",
+                                            value = selectedXttsProfile?.let { selected ->
+                                                val count = voiceGroups.firstOrNull { it.first().groupId == selected.groupId }?.size ?: 1
+                                                "${selected.name} ($count próbek)"
+                                            } ?: "Brak zapisanego profilu",
                                             onValueChange = {}, readOnly = true,
                                             modifier = Modifier.menuAnchor().fillMaxWidth(), label = { Text("Głos do sklonowania") }
                                         )
                                         ExposedDropdownMenu(expanded = xttsProfileExpanded, onDismissRequest = { xttsProfileExpanded = false }) {
-                                            profiles.forEach { profile ->
-                                                DropdownMenuItem(text = { Text(profile.name) }, onClick = {
-                                                    xttsChosenProfileId = profile.id; xttsProfileExpanded = false
-                                                })
+                                            voiceGroups.forEach { group ->
+                                                DropdownMenuItem(
+                                                    text = { Text("${group.first().name} (${group.size} próbek)") },
+                                                    onClick = {
+                                                        xttsChosenProfileId = group.first().groupId
+                                                        xttsProfileExpanded = false
+                                                    }
+                                                )
                                             }
                                         }
                                     }
@@ -484,8 +535,14 @@ private fun KinoTtsApp() {
                                             if (selected != null) scope.launch {
                                                 busy = true; xttsSynthesizing = true; progress = 0f; status = "Uruchamiam XTTS-v2…"
                                                 try {
+                                                    computeBackendStatus = "XTTS: inicjalizacja backendu ${xttsExecutionProvider.uppercase(Locale.ROOT)}…"
+                                                    withContext(Dispatchers.IO) { xttsRuntime.open() }
+                                                    computeBackendStatus = xttsRuntime.executionProviderStatus
+                                                    val referenceWav = withContext(Dispatchers.IO) {
+                                                        profileStore.combinedReference(selected.groupId)
+                                                    }
                                                     val wav = withContext(Dispatchers.IO) {
-                                                        xttsRuntime.synthesize(text, language, File(selected.wavPath), speed) { value ->
+                                                        xttsRuntime.synthesize(text, language, referenceWav, speed) { value ->
                                                             if (ProgressLimiter.allow("xtts", 90L) || value <= 0f || value >= 1f) {
                                                                 scope.launch(Dispatchers.Main.immediate) { progress = value.coerceIn(0f, 1f) }
                                                             }
@@ -560,8 +617,9 @@ private fun KinoTtsApp() {
                                                 } }
                                             }
                                             status = "Ładuję model i generuję mowę…"
+                                            withContext(Dispatchers.IO) { supertonic.load(modelDir) }
+                                            computeBackendStatus = supertonic.executionProviderStatus
                                             val wav = withContext(Dispatchers.IO) {
-                                                supertonic.load(modelDir)
                                                 supertonic.generate(text, sid, speed, steps, language)
                                             }
                                             output = wav
@@ -583,7 +641,6 @@ private fun KinoTtsApp() {
                         }
 
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        if (statusVisible || busy) StatusCard(status)
                         output?.let { file ->
                             Card {
                                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -616,22 +673,33 @@ private fun KinoTtsApp() {
                             }
                         }
                         Text("Zapisane próbki", style = MaterialTheme.typography.titleMedium)
-                        if (profiles.isEmpty()) {
-                            Text("Nie zapisano jeszcze żadnej próbki.", style = MaterialTheme.typography.bodySmall)
+                        if (voiceGroups.isEmpty()) {
+                            Text("Nie zapisano jeszcze żadnego głosu.", style = MaterialTheme.typography.bodySmall)
                         } else {
-                            profiles.forEach { profile ->
-                                VoiceProfileCard(profile, onDelete = {
-                                    if (!busy) scope.launch {
-                                        try {
-                                            val deleted = withContext(Dispatchers.IO) { profileStore.delete(profile.id) }
-                                            profiles = withContext(Dispatchers.IO) { profileStore.list() }
-                                            if (xttsChosenProfileId == profile.id) xttsChosenProfileId = profiles.firstOrNull()?.id.orEmpty()
-                                            status = if (deleted) "Usunięto próbkę: ${profile.name}" else "Usunięto wpis próbki; plik wymaga kontroli"
-                                        } catch (e: Exception) {
-                                            status = "Nie udało się usunąć próbki: ${e.message ?: e::class.java.simpleName}"
+                            voiceGroups.forEach { group ->
+                                Card {
+                                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(group.first().name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Text("${group.size} próbek przypisanych do jednego głosu. XTTS łączy je w referencję do syntezy.",
+                                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        group.forEachIndexed { sampleIndex, sample ->
+                                            VoiceProfileCard(sample.copy(name = "Próbka ${sampleIndex + 1}"), onDelete = {
+                                                if (!busy) scope.launch {
+                                                    try {
+                                                        val deleted = withContext(Dispatchers.IO) { profileStore.delete(sample.id) }
+                                                        profiles = withContext(Dispatchers.IO) { profileStore.list() }
+                                                        if (xttsChosenProfileId == sample.groupId && profiles.none { it.groupId == sample.groupId }) {
+                                                            xttsChosenProfileId = profiles.firstOrNull()?.groupId.orEmpty()
+                                                        }
+                                                        status = if (deleted) "Usunięto próbkę z głosu ${sample.name}" else "Nie udało się usunąć pliku próbki"
+                                                    } catch (e: Exception) {
+                                                        status = "Nie udało się usunąć próbki: ${e.message ?: e::class.java.simpleName}"
+                                                    }
+                                                }
+                                            }, enabled = !busy)
                                         }
                                     }
-                                }, enabled = !busy)
+                                }
                             }
                         }
                         Text(
@@ -667,7 +735,7 @@ private fun KinoTtsApp() {
                                                         }
                                                     }
                                                 }
-                                                supertonicModelStatus = "Model gotowy — zapisany w Documents/KinoTTS/Models"
+                                                supertonicModelStatus = "Model gotowy"
                                                 status = "Model Supertonic 3 jest gotowy"
                                             } catch (e: Exception) {
                                                 supertonicModelStatus = "Błąd: ${e.message ?: e::class.java.simpleName}"
@@ -700,9 +768,9 @@ private fun KinoTtsApp() {
 
                                 Text(
                                     if (xttsInstalled)
-                                        "Model pobrany i zainstalowany w Documents/KinoTTS/Models."
+                                        "Model gotowy"
                                     else
-                                        "Pobierz model z Hugging Face. Po instalacji pliki pozostaną na telefonie."
+                                        "Pobierz model z Hugging Face. Pliki pozostaną na telefonie."
                                 )
 
                                 OutlinedTextField(
@@ -776,7 +844,7 @@ private fun KinoTtsApp() {
                                                 xttsInstalled = true
 
                                                 xttsModelStatus =
-                                                    "Model XTTS-v2 został pobrany, sprawdzony i zainstalowany."
+                                                    "Model gotowy"
 
                                                 status =
                                                     "Pakiet XTTS-v2 jest gotowy do testu grafów ONNX."
@@ -900,7 +968,6 @@ private fun KinoTtsApp() {
                             }
                         }
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        if (statusVisible || busy) StatusCard(status)
                     }
 
                     Screen.Settings -> {
@@ -918,6 +985,7 @@ private fun KinoTtsApp() {
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
                                 Text("XTTS: ${xttsRuntime.executionProviderStatus}")
+                                Text("Backend ostatniej syntezy: $computeBackendStatus")
                                 Text(ramStats)
                                 Text("ONNX Runtime: $ortStatus")
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -951,7 +1019,7 @@ private fun KinoTtsApp() {
                                     }
                                 }
                                 Text(
-                                    "NNAPI jest trybem eksperymentalnym. Android może rozdzielić obliczenia między CPU, GPU i NPU; wybór NNAPI nie gwarantuje, że sterownik faktycznie użyje NPU. W razie błędu inicjalizacji XTTS wróci do CPU.",
+                                    "CPU oznacza wykonanie przez CPU. NNAPI oznacza, że ONNX Runtime przekazał obsługiwane operatory do Androida; sterownik może użyć CPU, GPU lub NPU, ale ta wersja ORT nie raportuje osobno rzeczywistego urządzenia dla każdej warstwy. Po błędzie NNAPI aplikacja pokazuje CPU fallback.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -960,7 +1028,7 @@ private fun KinoTtsApp() {
                                     color = MaterialTheme.colorScheme.error
                                 )
                                 Text("Po pobraniu model Supertonic generuje offline.")
-                                Text("NNAPI/NPU: obsługa i przyspieszenie sprzętowe wymagają osobnego testu na tym urządzeniu.")
+                                Text("Supertonic 3: obecnie jawnie skonfigurowany provider CPU. XTTS: CPU albo NNAPI; GPU/NPU nie będą zgłaszane jako aktywne bez potwierdzenia przez runtime.")
                             }
                         }
                         Card {

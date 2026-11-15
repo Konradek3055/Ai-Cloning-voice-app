@@ -56,8 +56,8 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
-            // Maven Central Android AAR is 1.28.0; Sherpa-ONNX 2.0.1 native release uses ORT 1.28.2.
-            // Keep Java/JNI and the shared native runtime aligned.
+            // Keep the ONNX Runtime 1.28.2 binary shipped with Sherpa-ONNX 2.0.1.
+            // The Sherpa AAR must stay before the XTTS ORT AAR in dependencies.
             pickFirsts += "**/libonnxruntime.so"
         }
         resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1")
@@ -75,13 +75,14 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    // Match the ONNX Runtime version bundled by sherpa-onnx 2.0.1.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+    // Sherpa-ONNX 2.0.1 Android package. Keep the API/JVM artifact included:
+    // OfflineTts and the Supertonic configuration classes are required at runtime.
+    // Its AAR contains the native Sherpa library and the matching ONNX Runtime 1.28.2.
+    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1")
 
-    // Official sherpa-onnx Android AAR (Kotlin API + arm64 native runtime).
-    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {
-        exclude(module = "sherpa-onnx-jvm")
-    }
+    // XTTS uses the ONNX Runtime Java API. This AAR also contains libonnxruntime.so;
+    // pickFirst below intentionally keeps the Sherpa 2.0.1 native runtime above.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
     // Used by the native XTTS-v2 ONNX port. No Python server is part of this app.
 
