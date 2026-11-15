@@ -38,7 +38,12 @@ jobs:
       - name: Set up Android SDK packages
         run: |
           set -euo pipefail
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.13113456"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
 
       - name: Set up Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
@@ -84,6 +89,7 @@ jobs:
           grep -q "package: name='pl.kinotts.studio'" apk-info.txt
           grep -q "sdkVersion:'28'" apk-info.txt
           unzip -Z1 "$APK" | grep -q '^lib/arm64-v8a/.*\.so$'
+          unzip -Z1 "$APK" | grep -q '^lib/arm64-v8a/libkinotts_tokenizer\.so$'
           echo "Verified APK: $APK"
           ls -lh "$APK"
 

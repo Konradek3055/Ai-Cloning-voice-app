@@ -1,0 +1,21 @@
+[package]
+name = "kinotts_tokenizer"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "kinotts_tokenizer"
+crate-type = ["cdylib"]
+
+[dependencies]
+tokenizers = { version = "0.22.1", default-features = false, features = ["onig"] }
+jni = "0.21.1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
