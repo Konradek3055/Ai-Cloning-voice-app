@@ -41,7 +41,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // Official sherpa-onnx Android AAR (Kotlin API + arm64 native runtime).
-    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1")
+    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {
+        exclude(module = "sherpa-onnx-jvm")
+    }
 
     // Used by the native XTTS-v2 ONNX port. No Python server is part of this app.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
