@@ -50,3 +50,7 @@ audio/
 .env.*
 !.env.example
 *.bak-*
+
+# Kotlin source package named models must remain tracked
+!app/src/main/java/pl/kinotts/studio/models/
+!app/src/main/java/pl/kinotts/studio/models/**
