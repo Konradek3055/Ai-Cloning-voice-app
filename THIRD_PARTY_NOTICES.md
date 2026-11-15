@@ -20,3 +20,7 @@ Its license applies to that implementation, not to XTTS-v2 model weights.
 
 ## Coqui TTS
 Where applicable, Coqui TTS source code is licensed under MPL-2.0.
+
+## ONNX Runtime Android
+ONNX Runtime Android 1.32.0 Java/JNI and native runtime: MIT License.
+https://github.com/microsoft/onnxruntime

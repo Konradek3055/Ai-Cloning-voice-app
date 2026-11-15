@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
 import pl.kinotts.studio.analysis.AudioAnalysisResult
 import pl.kinotts.studio.analysis.AudioAnalyzer
 import pl.kinotts.studio.engine.SupertonicEngine
+import pl.kinotts.studio.engine.XtTsOnnxRuntime
 import pl.kinotts.studio.models.ModelManager
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
@@ -85,6 +86,7 @@ private fun KinoTtsApp() {
         (customStepValue != null && customStepValue in 129..256)
     var ramStats by remember { mutableStateOf("Odczyt pamięci…") }
     var ramWarning by remember { mutableStateOf(false) }
+    var ortStatus by remember { mutableStateOf("Sprawdzanie ONNX Runtime…") }
     var language by remember { mutableStateOf("pl") }
     var output by remember { mutableStateOf<File?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -143,6 +145,12 @@ private fun KinoTtsApp() {
                 appMb, availableMb, totalMb)
             ramWarning = memory.lowMemory || availableMb < 500.0
             delay(2500)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        ortStatus = withContext(Dispatchers.IO) {
+            XtTsOnnxRuntime.diagnose().message
         }
     }
 
@@ -486,6 +494,7 @@ private fun KinoTtsApp() {
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
                                 Text("Silnik: CPU • ARM64 • model w prywatnym katalogu aplikacji")
                                 Text(ramStats)
+                                Text("ONNX Runtime: $ortStatus")
                                 if (ramWarning) Text(
                                     "Mało dostępnej pamięci RAM. Zamknij zbędne aplikacje.",
                                     color = MaterialTheme.colorScheme.error

@@ -8,7 +8,9 @@ Stan na moment przekazania:
 - [x] Pobieranie archiwum Supertonic 3 INT8 do katalogu prywatnego aplikacji.
 - [x] Wywołanie natywnego API Supertonic z Kotlin.
 - [x] Zapis wygenerowanego WAV i systemowy eksport przez Storage Access Framework.
-- [x] Zależność ONNX Runtime Android.
+- [x] ONNX Runtime Android 1.32.0 Java/JNI dependency and native-version diagnostic source added.
+- [x] XTTS four-model ONNX session loader source added (conditioning, speaker, GPT, vocoder).
+- [ ] Verify ORT 1.32.0 wins the native-library merge and passes on-device initialization.
 - [ ] Pełny pipeline XTTS-v2 ONNX w Kotlin (krytyczny brak).
 - [ ] Pobieranie wszystkich plików modelu XTTS i bezpieczny token HF (jeśli wymagany).
 - [ ] Pełna analiza próbki i profilowanie głosu XTTS.
