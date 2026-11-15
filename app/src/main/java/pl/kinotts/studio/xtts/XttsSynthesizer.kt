@@ -784,37 +784,104 @@ private object Dsp {
 }
 
 /** BPE tokenizer for the Hugging Face tokenizer.json stored as vocab.json. */
+
 private class XttsBpe(file: File) {
+    private data class AddedToken(val id: Int, val lstrip: Boolean, val rstrip: Boolean)
+    private data class Segment(val text: String, val specialId: Int? = null)
+
     private val vocab = HashMap<String, Int>()
     private val ranks = HashMap<String, Int>()
-    private var unknownId: Int = -1
-    private val preTokenPattern = Regex("\\[[^\\]]+\\]|[\\p{L}\\p{M}\\p{N}_]+|[^\\p{L}\\p{M}\\p{N}_\\s]+")
+    private val addedTokens = LinkedHashMap<String, AddedToken>()
+    private val byteEncoder = createByteEncoder()
+    private val bpeCache = HashMap<String, List<String>>()
+    private val addPrefixSpace: Boolean
+    private val useRegex: Boolean
+    private val specialTokenPattern: Regex?
+
+    // GPT-2 / Hugging Face ByteLevel pre-tokenization.
+    private val byteLevelPattern = Regex(
+        "(?U)(?i:'s|'t|'re|'ve|'m|'ll|'d)| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"
+    )
+
     init {
-        require(file.isFile) { "Brak vocab.json." }
+        require(file.isFile) { "Brak vocab.json XTTS." }
+
         val root = JSONObject(file.readText(Charsets.UTF_8))
         val model = root.optJSONObject("model") ?: root
-        val vocabJson = model.optJSONObject("vocab") ?: root.optJSONObject("vocab")
+
+        val vocabJson = model.optJSONObject("vocab")
+            ?: root.optJSONObject("vocab")
             ?: error("vocab.json nie zawiera model.vocab.")
+
         val keys = vocabJson.keys()
-        while (keys.hasNext()) { val key = keys.next(); vocab[key] = vocabJson.getInt(key) }
-        val added = root.optJSONArray("added_tokens") ?: JSONArray()
-        for (i in 0 until added.length()) {
-            val item = added.optJSONObject(i) ?: continue
-            val content = item.optString("content")
-            if (content.isNotEmpty()) vocab[content] = item.optInt("id", vocab[content] ?: -1)
+        while (keys.hasNext()) {
+            val key = keys.next()
+            vocab[key] = vocabJson.getInt(key)
         }
-        unknownId = vocab[model.optString("unk_token", "[UNK]")] ?: vocab["[UNK]"] ?: -1
-        val merges = model.optJSONArray("merges") ?: JSONArray()
+
+        val merges = model.optJSONArray("merges")
+            ?: root.optJSONArray("merges")
+            ?: error("vocab.json nie zawiera tabeli BPE merges.")
+
         for (i in 0 until merges.length()) {
             val item = merges.opt(i)
             val pair = when (item) {
                 is String -> item.trim().split(Regex("\\s+"), limit = 2)
-                is JSONArray -> if (item.length() >= 2) listOf(item.getString(0), item.getString(1)) else emptyList()
+                is JSONArray -> if (item.length() >= 2) {
+                    listOf(item.getString(0), item.getString(1))
+                } else emptyList()
                 else -> emptyList()
             }
-            if (pair.size == 2) ranks["${pair[0]}\u0001${pair[1]}"] = i
+            if (pair.size == 2) {
+                ranks[pair[0] + "\u0001" + pair[1]] = i
+            }
         }
-        require(vocab.isNotEmpty() && ranks.isNotEmpty()) { "Nieprawidłowy BPE tokenizer w vocab.json." }
+
+        val preTokenizer = root.optJSONObject("pre_tokenizer")
+            ?: model.optJSONObject("pre_tokenizer")
+        val byteLevel = findByteLevel(preTokenizer)
+
+        // Hugging Face ByteLevel defaults.
+        addPrefixSpace = byteLevel?.optBoolean("add_prefix_space", false) ?: false
+        useRegex = byteLevel?.optBoolean("use_regex", true) ?: true
+
+        val added = root.optJSONArray("added_tokens") ?: JSONArray()
+        for (i in 0 until added.length()) {
+            val item = added.optJSONObject(i) ?: continue
+            val content = item.optString("content")
+            val id = item.optInt("id", vocab[content] ?: -1)
+
+            if (content.isNotEmpty() && id >= 0) {
+                addedTokens[content] = AddedToken(
+                    id,
+                    item.optBoolean("lstrip", false),
+                    item.optBoolean("rstrip", false)
+                )
+                vocab[content] = id
+            }
+        }
+
+        // XTTS language and SPACE markers are special tokens.
+        for ((token, id) in vocab) {
+            if (token.length >= 3 && token.startsWith("[") && token.endsWith("]")) {
+                if (!addedTokens.containsKey(token)) {
+                    addedTokens[token] = AddedToken(id, false, false)
+                }
+            }
+        }
+
+        specialTokenPattern = if (addedTokens.isEmpty()) {
+            null
+        } else {
+            Regex(
+                addedTokens.keys
+                    .sortedByDescending { it.length }
+                    .joinToString("|") { Regex.escape(it) }
+            )
+        }
+
+        require(vocab.isNotEmpty()) { "Puste vocab.json." }
+        require(ranks.isNotEmpty()) { "Pusta tabela BPE merges." }
     }
 
     fun tokenId(token: String): Int = vocab[token] ?: -1
@@ -823,38 +890,204 @@ private class XttsBpe(file: File) {
         val cleaned = XttsPolish.clean(text, language)
         val tokenizerLanguage = if (language == "zh") "zh-cn" else language
         val marked = "[$tokenizerLanguage]" + cleaned.replace(" ", "[SPACE]")
+
         val result = ArrayList<Int>()
-        for (match in preTokenPattern.findAll(marked)) {
-            val piece = match.value
-            val special = vocab[piece]
-            if (piece.startsWith("[") && piece.endsWith("]") && special != null) {
-                result.add(special)
+        var firstNormalSegment = true
+
+        for (segment in splitAddedTokens(marked)) {
+            if (segment.specialId != null) {
+                result.add(segment.specialId)
+                continue
+            }
+
+            if (segment.text.isEmpty()) continue
+
+            var part = segment.text
+            if (firstNormalSegment && addPrefixSpace && !part.startsWith(" ")) {
+                part = " $part"
+            }
+            firstNormalSegment = false
+
+            val pieces = if (useRegex) {
+                byteLevelPattern.findAll(part).map { it.value }.toList()
             } else {
-                bpe(piece).forEach { token ->
-                    val id = vocab[token] ?: unknownId
-                    require(id >= 0) { "Tokenizer nie zna fragmentu '$token'." }
+                listOf(part)
+            }
+
+            require(pieces.joinToString("") == part) {
+                "ByteLevel nie podzielił całego tekstu wejściowego."
+            }
+
+            for (piece in pieces) {
+                val byteText = encodeUtf8Bytes(piece)
+
+                for (token in bpe(byteText)) {
+                    val id = vocab[token] ?: error(
+                        "Brak tokenu BPE w HF vocab.json: '${token.take(30)}'."
+                    )
                     result.add(id)
                 }
             }
         }
+
         return result
     }
 
-    private fun bpe(piece: String): List<String> {
-        val cps = piece.codePoints().toArray()
-        if (cps.isEmpty()) return emptyList()
-        val parts = cps.map { String(Character.toChars(it)) }.toMutableList()
-        while (parts.size > 1) {
-            var bestRank = Int.MAX_VALUE; var bestIndex = -1
-            for (i in 0 until parts.lastIndex) {
-                val rank = ranks["${parts[i]}\u0001${parts[i + 1]}"] ?: Int.MAX_VALUE
-                if (rank < bestRank) { bestRank = rank; bestIndex = i }
+    private fun findByteLevel(node: JSONObject?): JSONObject? {
+        if (node == null) return null
+
+        if (node.optString("type") == "ByteLevel") return node
+
+        if (node.optString("type") == "Sequence") {
+            val children = node.optJSONArray("pretokenizers")
+                ?: node.optJSONArray("pre_tokenizers")
+                ?: return null
+
+            for (i in 0 until children.length()) {
+                val child = children.optJSONObject(i) ?: continue
+                val found = findByteLevel(child)
+                if (found != null) return found
             }
-            if (bestIndex < 0) break
-            parts[bestIndex] = parts[bestIndex] + parts[bestIndex + 1]
-            parts.removeAt(bestIndex + 1)
         }
+
+        return null
+    }
+
+    private fun splitAddedTokens(text: String): List<Segment> {
+        val pattern = specialTokenPattern ?: return listOf(Segment(text))
+        val result = ArrayList<Segment>()
+        var cursor = 0
+
+        for (match in pattern.findAll(text)) {
+            val info = addedTokens[match.value] ?: continue
+
+            var tokenStart = match.range.first
+            if (info.lstrip) {
+                while (tokenStart > cursor && text[tokenStart - 1].isWhitespace()) {
+                    tokenStart--
+                }
+            }
+
+            if (tokenStart > cursor) {
+                result.add(Segment(text.substring(cursor, tokenStart)))
+            }
+
+            result.add(Segment("", info.id))
+
+            var tokenEnd = match.range.last + 1
+            if (info.rstrip) {
+                while (tokenEnd < text.length && text[tokenEnd].isWhitespace()) {
+                    tokenEnd++
+                }
+            }
+
+            cursor = maxOf(cursor, tokenEnd)
+        }
+
+        if (cursor < text.length) {
+            result.add(Segment(text.substring(cursor)))
+        }
+
+        return result
+    }
+
+    private fun encodeUtf8Bytes(text: String): String {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val result = StringBuilder(bytes.size)
+
+        for (byte in bytes) {
+            result.append(byteEncoder[byte.toInt() and 0xff])
+        }
+
+        return result.toString()
+    }
+
+    @Synchronized
+    private fun bpe(encoded: String): List<String> {
+        bpeCache[encoded]?.let { return it }
+
+        val points = encoded.codePoints().toArray()
+        if (points.isEmpty()) return emptyList()
+
+        var parts = points.map { String(Character.toChars(it)) }
+
+        while (parts.size > 1) {
+            var bestRank = Int.MAX_VALUE
+            var bestLeft: String? = null
+            var bestRight: String? = null
+
+            for (i in 0 until parts.lastIndex) {
+                val left = parts[i]
+                val right = parts[i + 1]
+                val rank = ranks[left + "\u0001" + right] ?: Int.MAX_VALUE
+
+                if (rank < bestRank) {
+                    bestRank = rank
+                    bestLeft = left
+                    bestRight = right
+                }
+            }
+
+            val left = bestLeft ?: break
+            val right = bestRight ?: break
+
+            val merged = ArrayList<String>(parts.size)
+            var i = 0
+
+            while (i < parts.size) {
+                if (i < parts.lastIndex &&
+                    parts[i] == left &&
+                    parts[i + 1] == right
+                ) {
+                    merged.add(left + right)
+                    i += 2
+                } else {
+                    merged.add(parts[i])
+                    i++
+                }
+            }
+
+            parts = merged
+        }
+
+        if (bpeCache.size >= 4096) bpeCache.clear()
+        bpeCache[encoded] = parts
+
         return parts
+    }
+
+    private fun createByteEncoder(): CharArray {
+        val bytes = ArrayList<Int>(256)
+        val chars = ArrayList<Int>(256)
+
+        for (value in 33..126) {
+            bytes.add(value)
+            chars.add(value)
+        }
+        for (value in 161..172) {
+            bytes.add(value)
+            chars.add(value)
+        }
+        for (value in 174..255) {
+            bytes.add(value)
+            chars.add(value)
+        }
+
+        var extra = 0
+        for (value in 0..255) {
+            if (value !in bytes) {
+                bytes.add(value)
+                chars.add(256 + extra)
+                extra++
+            }
+        }
+
+        val encoder = CharArray(256)
+        for (i in bytes.indices) {
+            encoder[bytes[i]] = chars[i].toChar()
+        }
+
+        return encoder
     }
 }
 
