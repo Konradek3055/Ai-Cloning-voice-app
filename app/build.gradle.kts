@@ -78,7 +78,9 @@ dependencies {
     // The Android AAR already contains the Sherpa JVM API, including OfflineTts.
     // Exclude its duplicate transitive JVM JAR; keeping both causes duplicate classes.
     // Sherpa Android AAR + wymagane klasy API z transitive sherpa-onnx-jvm.
-    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1")
+    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {
+        exclude(module = "sherpa-onnx-jvm")
+    }
 
     // XTTS uses the ONNX Runtime Java API. This AAR also contains libonnxruntime.so;
     // pickFirst below intentionally keeps the Sherpa 2.0.1 native runtime above.
