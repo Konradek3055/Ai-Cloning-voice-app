@@ -46,7 +46,7 @@ dependencies {
     }
 
     // Used by the native XTTS-v2 ONNX port. No Python server is part of this app.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
+
 
     implementation("org.apache.commons:commons-compress:1.28.0")
 }
