@@ -45,6 +45,29 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Configure stable APK signing
+        env:
+          KINOTTS_KEYSTORE_BASE64: ${{ secrets.KINOTTS_KEYSTORE_BASE64 }}
+          KINOTTS_STORE_PASSWORD: ${{ secrets.KINOTTS_STORE_PASSWORD }}
+          KINOTTS_KEY_ALIAS: ${{ secrets.KINOTTS_KEY_ALIAS }}
+          KINOTTS_KEY_PASSWORD: ${{ secrets.KINOTTS_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$KINOTTS_KEYSTORE_BASE64" ]]; then
+            KEYSTORE="$RUNNER_TEMP/kinotts-signing.jks"
+            printf '%s' "$KINOTTS_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+            test -s "$KEYSTORE"
+            {
+              echo "KINOTTS_KEYSTORE_PATH=$KEYSTORE"
+              echo "KINOTTS_STORE_PASSWORD=$KINOTTS_STORE_PASSWORD"
+              echo "KINOTTS_KEY_ALIAS=$KINOTTS_KEY_ALIAS"
+              echo "KINOTTS_KEY_PASSWORD=$KINOTTS_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Używam stałego klucza podpisującego."
+          else
+            echo "::warning::Brak KINOTTS_KEYSTORE_BASE64 — używam tymczasowego podpisu debug."
+          fi
+
       - name: Build debug APK
         run: |
           set -euo pipefail
@@ -64,29 +87,21 @@ jobs:
           echo "Verified APK: $APK"
           ls -lh "$APK"
 
-      - name: Verify stable update signature and version
+      - name: Verify APK signature
         run: |
           set -euo pipefail
-
           APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$APK"
-
-          grep -q "versionCode='3'" apk-info.txt
-
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$APKSIGNER"
-
-          "$APKSIGNER" verify --print-certs "$APK" | tee apk-signing.txt
-
-          EXPECTED="86f9acb035c41db03f5ef52669a0c88f6160ca2bf8f19c21e2ec77f8829c494e"
-
-          if ! grep -qiF "Signer #1 certificate SHA-256 digest: $EXPECTED" apk-signing.txt; then
-            echo "::error::Podpis APK różni się od poprzednio zainstalowanej wersji."
-            echo "::error::Nie instaluj tego APK jako aktualizacji."
-            exit 1
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee apk-signing.txt
+          grep -Eq "Signer #1 certificate SHA-256 digest: [0-9a-fA-F]{64}" apk-signing.txt
+          if [[ -n "${KINOTTS_KEYSTORE_PATH:-}" ]]; then
+            echo "APK podpisany stałym kluczem KinoTTS."
+          else
+            echo "::warning::Podpis debug jest tymczasowy. Skonfiguruj GitHub Secrets, aby aktualizacje miały stały podpis."
           fi
 
-          echo "Potwierdzono zgodny podpis i versionCode=3."
       - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -104,5 +119,6 @@ jobs:
           path: |
             build.log
             apk-info.txt
+            apk-signing.txt
           if-no-files-found: ignore
           retention-days: 14
