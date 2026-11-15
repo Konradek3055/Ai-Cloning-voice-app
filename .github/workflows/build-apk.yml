@@ -64,6 +64,29 @@ jobs:
           echo "Verified APK: $APK"
           ls -lh "$APK"
 
+      - name: Verify stable update signature and version
+        run: |
+          set -euo pipefail
+
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+
+          grep -q "versionCode='3'" apk-info.txt
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+
+          "$APKSIGNER" verify --print-certs "$APK" | tee apk-signing.txt
+
+          EXPECTED="86f9acb035c41db03f5ef52669a0c88f6160ca2bf8f19c21e2ec77f8829c494e"
+
+          if ! grep -qiF "Signer #1 certificate SHA-256 digest: $EXPECTED" apk-signing.txt; then
+            echo "::error::Podpis APK różni się od poprzednio zainstalowanej wersji."
+            echo "::error::Nie instaluj tego APK jako aktualizacji."
+            exit 1
+          fi
+
+          echo "Potwierdzono zgodny podpis i versionCode=3."
       - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
