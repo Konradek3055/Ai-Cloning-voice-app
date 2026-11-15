@@ -129,7 +129,7 @@ class XttsSynthesizer(
             sessions = if (requestedExecutionProvider == "nnapi") {
                 try {
                     XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = true).also {
-                        executionProviderStatus = "NNAPI EP zarejestrowany — przydział CPU/GPU/NPU zależy od sterownika i operatorów"
+                        executionProviderStatus = "NNAPI EP zarejestrowany — Android/sterownik wybiera sprzęt; ORT nie rozróżnia tu GPU i NPU"
                     }
                 } catch (error: Exception) {
                     XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {

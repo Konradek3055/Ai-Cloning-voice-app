@@ -10,6 +10,11 @@ import java.util.UUID
 
 /** Native in-process Supertonic 3 inference. No Python, Termux, or local HTTP server. */
 class SupertonicEngine(private val outputDir: File) : AutoCloseable {
+    /** Supertonic currently uses sherpa-onnx provider=cpu in this app. */
+    @Volatile
+    var executionProviderStatus: String = "CPU — Sherpa-ONNX provider=cpu (oczekuje na model)"
+        private set
+
     private var tts: OfflineTts? = null
     private var loadedFrom: String? = null
 
@@ -56,14 +61,26 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
 
         val candidate = try {
             OfflineTts(config = cfg)
-        } catch (e: Exception) {
+        } catch (e: NoClassDefFoundError) {
             throw IllegalStateException(
-                "Nie udało się zainicjalizować Supertonic przez Sherpa-ONNX: " +
-                    (e.message ?: e.javaClass.simpleName), e
+                "Brakuje klasy API Sherpa-ONNX w APK (np. OfflineTts): " +
+                    (e.message ?: e.javaClass.simpleName) +
+                    ". Sprawdź, czy zależność sherpa-onnx-jvm nie jest wykluczona.", e
+            )
+        } catch (e: UnsatisfiedLinkError) {
+            throw IllegalStateException(
+                "Nie można załadować JNI Sherpa-ONNX/ONNX Runtime (np. OrtGetApiBase): " +
+                    (e.message ?: e.javaClass.simpleName) +
+                    ". Sprawdź zgodność libonnxruntime.so z Sherpa-ONNX 2.0.1.", e
             )
         } catch (e: LinkageError) {
             throw IllegalStateException(
-                "Brak lub konflikt biblioteki natywnej Sherpa-ONNX/ONNX Runtime: " +
+                "Błąd linkowania bibliotek lub klas Sherpa-ONNX: " +
+                    (e.message ?: e.javaClass.simpleName), e
+            )
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "Nie udało się zainicjalizować Supertonic przez Sherpa-ONNX: " +
                     (e.message ?: e.javaClass.simpleName), e
             )
         }
@@ -82,6 +99,7 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
 
         tts = candidate
         loadedFrom = path
+        executionProviderStatus = "CPU — Sherpa-ONNX provider=cpu (potwierdzona konfiguracja silnika)"
     }
 
     @Synchronized
@@ -130,6 +148,7 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
         }
         tts = null
         loadedFrom = null
+        executionProviderStatus = "CPU — Sherpa-ONNX provider=cpu (silnik odładowany)"
     }
 
     companion object {
