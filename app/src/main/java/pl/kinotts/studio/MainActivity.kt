@@ -1270,7 +1270,7 @@ private fun localizeStatusEnglish(status: String): String {
         "Utworzono głos " to "Created voice ",
         "Dodano próbkę do głosu " to "Added a sample to voice "
     )
-    for (polish, english) in prefixes) {
+    for ((polish, english) in prefixes) {
         if (status.startsWith(polish)) return english + status.removePrefix(polish)
     }
     return status
