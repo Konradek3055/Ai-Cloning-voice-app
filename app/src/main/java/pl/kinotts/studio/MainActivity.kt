@@ -42,6 +42,7 @@ import pl.kinotts.studio.models.XttsModelManager
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
 import pl.kinotts.studio.xtts.XttsSynthesizer
+import pl.kinotts.studio.storage.KinoStorage
 import java.io.File
 import java.util.Locale
 
@@ -49,6 +50,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { KinoTtsApp() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (KinoStorage.hasAccess(this)) {
+            runCatching { KinoStorage.ensureDirectories(this) }
+        }
     }
 }
 
@@ -65,8 +73,8 @@ private fun KinoTtsApp() {
     val xttsModels = remember { XttsModelManager(context.applicationContext) }
     val analyzer = remember { AudioAnalyzer(context.applicationContext) }
     val profileStore = remember { VoiceProfileStore(context.applicationContext) }
-    val supertonic = remember { SupertonicEngine(File(context.filesDir, "audio")) }
-    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), File(context.cacheDir, "xtts-output")) }
+    val supertonic = remember { SupertonicEngine(KinoStorage.outputDir(context).apply { mkdirs() }) }
+    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), KinoStorage.outputDir(context).apply { mkdirs() }) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
@@ -731,6 +739,15 @@ private fun KinoTtsApp() {
                         Text("Ustawienia", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                         Card {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Trwały magazyn danych", style = MaterialTheme.typography.titleMedium)
+                                Text("Modele, profile głosu i wygenerowane WAV są przechowywane w Documents/KinoTTS. Nie są trzymane w katalogu aplikacji.")
+                                Text(if (KinoStorage.hasAccess(context)) "Dostęp do Documents: przyznany" else "Dostęp do Documents: wymagany")
+                                OutlinedButton(
+                                    onClick = { KinoStorage.requestAccess(context) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Nadaj / sprawdź dostęp do Documents") }
+                                Text("Android nie usuwa Documents/KinoTTS przy odinstalowaniu aplikacji. Usunięcie tych plików wymaga ręcznego skasowania folderu w menedżerze plików.", style = MaterialTheme.typography.bodySmall)
+                                Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
                                 Text("Silnik: CPU • ARM64 • model w prywatnym katalogu aplikacji")
                                 Text(ramStats)
