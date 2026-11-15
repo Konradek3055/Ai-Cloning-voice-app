@@ -16,6 +16,7 @@ object KinoStorage {
     fun root(context: Context): File = File(documentsDir(), "KinoTTS")
     fun modelsRoot(context: Context): File = File(root(context), "Models")
     fun modelsDir(context: Context): File = File(modelsRoot(context), "XTTSv2")
+    fun supertonicDir(context: Context): File = File(modelsRoot(context), "Supertonic3")
     fun voicesDir(context: Context): File = File(root(context), "Voices")
     fun outputDir(context: Context): File = File(root(context), "Output")
 
@@ -51,7 +52,7 @@ object KinoStorage {
 
     fun ensureDirectories(context: Context) {
         requireAccess(context)
-        listOf(root(context), modelsRoot(context), modelsDir(context), voicesDir(context), outputDir(context))
+        listOf(root(context), modelsRoot(context), modelsDir(context), supertonicDir(context), voicesDir(context), outputDir(context))
             .forEach { dir -> check(dir.mkdirs() || dir.isDirectory) { "Nie można utworzyć katalogu: ${dir.absolutePath}" } }
         migrateLegacy(context)
     }
@@ -72,6 +73,21 @@ object KinoStorage {
                 }
             }
         }
+        val oldSupertonic = File(files, "models/supertonic3")
+        val newSupertonic = supertonicDir(context)
+        if (oldSupertonic.isDirectory) {
+            check(newSupertonic.mkdirs() || newSupertonic.isDirectory) {
+                "Nie można utworzyć katalogu modelu Supertonic."
+            }
+            oldSupertonic.walkTopDown().filter { it.isFile }.forEach { source ->
+                val target = File(newSupertonic, source.relativeTo(oldSupertonic).path)
+                if (!target.exists()) {
+                    target.parentFile?.mkdirs()
+                    source.copyTo(target, overwrite = false)
+                }
+            }
+        }
+
         val oldVoices = File(files, "voice_profiles")
         val newVoices = voicesDir(context)
         if (oldVoices.isDirectory) {

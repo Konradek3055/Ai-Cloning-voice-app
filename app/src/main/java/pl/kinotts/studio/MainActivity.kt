@@ -39,6 +39,7 @@ import pl.kinotts.studio.engine.SupertonicEngine
 import pl.kinotts.studio.engine.XtTsOnnxRuntime
 import pl.kinotts.studio.models.ModelManager
 import pl.kinotts.studio.models.XttsModelManager
+import pl.kinotts.studio.security.HfTokenStore
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
 import pl.kinotts.studio.xtts.XttsSynthesizer
@@ -88,14 +89,18 @@ private fun KinoTtsApp() {
     var xttsChosenProfileId by remember { mutableStateOf("") }
     var xttsSynthesizing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Gotowy") }
-    var hfToken by remember { mutableStateOf("") }
+    var hfToken by remember { mutableStateOf(HfTokenStore.load(context).orEmpty()) }
     var xttsInstalled by remember { mutableStateOf(xttsModels.isInstalled()) }
     var xttsModelStatus by remember {
         mutableStateOf(if (xttsInstalled) "Model XTTS jest zainstalowany." else "Model XTTS nie jest jeszcze pobrany.")
     }
+    var supertonicModelStatus by remember {
+        mutableStateOf(if (models.isSupertonicInstalled()) "Model jest zainstalowany." else "Model nie jest jeszcze pobrany.")
+    }
     var xttsGraphInfo by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
+    var progressEta by remember { mutableStateOf("") }
     var sid by remember { mutableIntStateOf(0) }
     var speed by remember { mutableFloatStateOf(1f) }
     var steps by remember { mutableIntStateOf(8) }
@@ -200,20 +205,60 @@ private fun KinoTtsApp() {
                 )
             },
             bottomBar = {
-                NavigationBar {
-                    Screen.entries.forEach { item ->
-                        val icon = when (item) {
-                            Screen.Studio -> Icons.Default.Home
-                            Screen.Voices -> Icons.Default.GraphicEq
-                            Screen.Models -> Icons.Default.Download
-                            Screen.Settings -> Icons.Default.Settings
+                Column {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("XTTS-v2", fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    xttsModelStatus,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Supertonic 3", fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    supertonicModelStatus,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2
+                                )
+                            }
+                            if (busy) {
+                                LinearProgressIndicator(
+                                    progress = { progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                if (progressEta.isNotBlank()) {
+                                    Text(progressEta, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
                         }
-                        NavigationBarItem(
-                            selected = screen == item,
-                            onClick = { screen = item },
-                            icon = { Icon(icon, contentDescription = item.title) },
-                            label = { Text(item.title) }
-                        )
+                    }
+                    NavigationBar {
+                        Screen.entries.forEach { item ->
+                            val icon = when (item) {
+                                Screen.Studio -> Icons.Default.Home
+                                Screen.Voices -> Icons.Default.GraphicEq
+                                Screen.Models -> Icons.Default.Download
+                                Screen.Settings -> Icons.Default.Settings
+                            }
+                            NavigationBarItem(
+                                selected = screen == item,
+                                onClick = { screen = item },
+                                icon = { Icon(icon, contentDescription = item.title) },
+                                label = { Text(item.title) }
+                            )
+                        }
                     }
                 }
             }
@@ -513,19 +558,27 @@ private fun KinoTtsApp() {
                         Card {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("Supertonic 3 INT8", style = MaterialTheme.typography.titleMedium)
-                                Text(if (models.isSupertonicInstalled()) "Pobrany i zweryfikowany w pamięci aplikacji" else "Niepobrany — pobierze się przy pierwszej syntezie")
+                                Text(if (models.isSupertonicInstalled()) "Pobrany i zweryfikowany w Documents/KinoTTS/Models" else "Niepobrany — pobierze się przy pierwszej syntezie")
                                 Button(
                                     onClick = {
                                         scope.launch {
                                             busy = true
                                             progress = 0f
+                                            progressEta = "Szacowanie czasu…"
                                             status = "Pobieram i weryfikuję Supertonic 3…"
+                                            supertonicModelStatus = "Pobieranie modelu…"
+                                            val startedAt = System.currentTimeMillis()
                                             try {
                                                 withContext(Dispatchers.IO) {
-                                                    models.ensureSupertonic { value -> progress = value }
+                                                    models.ensureSupertonic { value ->
+                                                        progress = value
+                                                        progressEta = estimateRemainingLabel(value, startedAt)
+                                                    }
                                                 }
+                                                supertonicModelStatus = "Model gotowy — zapisany w Documents/KinoTTS/Models"
                                                 status = "Model Supertonic 3 jest gotowy"
                                             } catch (e: Exception) {
+                                                supertonicModelStatus = "Błąd: ${e.message ?: e::class.java.simpleName}"
                                                 status = "Błąd pobierania: ${e.message ?: e::class.java.simpleName}"
                                             } finally {
                                                 busy = false
@@ -550,7 +603,7 @@ private fun KinoTtsApp() {
 
                                 Text(
                                     if (xttsInstalled)
-                                        "Model pobrany i zainstalowany w pamięci prywatnej aplikacji."
+                                        "Model pobrany i zainstalowany w Documents/KinoTTS/Models."
                                     else
                                         "Pobierz model z Hugging Face. Po instalacji pliki pozostaną na telefonie."
                                 )
@@ -561,8 +614,7 @@ private fun KinoTtsApp() {
                                     label = { Text("Hugging Face token (hf_… )") },
                                     supportingText = {
                                         Text(
-                                            "Token jest używany tylko podczas pobierania. " +
-                                            "Nie zapisujemy go w plikach aplikacji."
+                                            "Token jest szyfrowany kluczem Android Keystore i zapamiętywany na tym urządzeniu."
                                         )
                                     },
                                     visualTransformation = PasswordVisualTransformation(),
@@ -576,8 +628,6 @@ private fun KinoTtsApp() {
 
                                         val tokenForDownload = hfToken.trim()
 
-                                        hfToken = ""
-
                                         scope.launch {
 
                                             busy = true
@@ -586,8 +636,11 @@ private fun KinoTtsApp() {
 
                                             xttsModelStatus =
                                                 "Pobieram i weryfikuję pliki XTTS-v2…"
+                                            progressEta = "Szacowanie czasu…"
+                                            val startedAt = System.currentTimeMillis()
 
                                             try {
+                                                HfTokenStore.save(context, tokenForDownload)
 
                                                 withContext(Dispatchers.IO) {
 
@@ -595,6 +648,7 @@ private fun KinoTtsApp() {
                                                         tokenForDownload
                                                     ) { value ->
                                                         progress = value
+                                                        progressEta = estimateRemainingLabel(value, startedAt)
                                                     }
                                                 }
 
@@ -613,8 +667,6 @@ private fun KinoTtsApp() {
                                                     (e.message ?: e::class.java.simpleName)
 
                                             } finally {
-
-                                                hfToken = ""
                                                 busy = false
                                             }
                                         }
@@ -716,14 +768,6 @@ private fun KinoTtsApp() {
                                 }
 
                                 Text(
-                                    "Ważne: pobranie modelu i otwarcie grafów nie oznacza jeszcze gotowej syntezy. " +
-                                    "Pełny pipeline XTTS (audio referencyjne → conditioning → BPE → GPT z KV-cache → HiFi-GAN → WAV) " +
-                                    "nadal wymaga implementacji i testu generowania na tym telefonie.",
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-
-                                Text(
                                     "Wagi tego repozytorium są objęte CC BY-NC 4.0 — użytek niekomercyjny. " +
                                     "Używaj wyłącznie własnego głosu albo nagrań z wyraźną zgodą właściciela.",
                                     style = MaterialTheme.typography.bodySmall,
@@ -749,7 +793,7 @@ private fun KinoTtsApp() {
                                 Text("Android nie usuwa Documents/KinoTTS przy odinstalowaniu aplikacji. Usunięcie tych plików wymaga ręcznego skasowania folderu w menedżerze plików.", style = MaterialTheme.typography.bodySmall)
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
-                                Text("Silnik: CPU • ARM64 • model w prywatnym katalogu aplikacji")
+                                Text("Silnik: CPU • ARM64 • modele w Documents/KinoTTS")
                                 Text(ramStats)
                                 Text("ONNX Runtime: $ortStatus")
                                 if (ramWarning) Text(
@@ -757,8 +801,7 @@ private fun KinoTtsApp() {
                                     color = MaterialTheme.colorScheme.error
                                 )
                                 Text("Po pobraniu model Supertonic generuje offline.")
-                                Text("NPU nie jest obecnie obsługiwane przez tę integrację.")
-                                Text("Do syntezy Supertonic nie są wymagane Termux, Ubuntu PRoot, Python ani lokalny serwer.")
+                                Text("NNAPI/NPU: obsługa i przyspieszenie sprzętowe wymagają osobnego testu na tym urządzeniu.")
                             }
                         }
                         Card {
@@ -801,3 +844,22 @@ private fun StatusCard(status: String) {
 
 private fun formatNumber(value: Float): String = String.format(Locale.US, "%.1f", value)
 private fun formatSeconds(value: Double): String = String.format(Locale.US, "%.1f s", value)
+
+
+private fun estimateRemainingLabel(progress: Float, startedAt: Long): String {
+    val p = progress.coerceIn(0f, 1f)
+    if (p < 0.02f) return "Szacowany czas: obliczanie…"
+    if (p >= 0.999f) return "Pozostało: 0 s"
+
+    val elapsedMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1L)
+    val remainingSeconds = (elapsedMs.toDouble() * (1.0 - p) / p / 1000.0)
+        .toLong().coerceAtLeast(0L)
+
+    val minutes = remainingSeconds / 60
+    val seconds = remainingSeconds % 60
+    return if (minutes > 0) {
+        "Szacowany czas: około ${minutes} min ${seconds} s"
+    } else {
+        "Szacowany czas: około ${seconds} s"
+    }
+}

@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
+import pl.kinotts.studio.storage.KinoStorage
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -13,8 +14,9 @@ import java.net.URL
 
 /** Downloads, validates and installs model packs inside this app's private files directory. */
 class ModelManager(context: Context) {
-    private val root = File(context.filesDir, "models").apply { mkdirs() }
-    private val supertonicDir = File(root, "supertonic3")
+    private val appContext = context.applicationContext
+    private val root = KinoStorage.modelsRoot(appContext).apply { mkdirs() }
+    private val supertonicDir = KinoStorage.supertonicDir(appContext)
     private val supertonicUrl =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" +
             "sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2"
@@ -30,6 +32,7 @@ class ModelManager(context: Context) {
 
     suspend fun ensureSupertonic(onProgress: (Float) -> Unit = {}): File =
         withContext(Dispatchers.IO) {
+            KinoStorage.ensureDirectories(appContext)
             if (isSupertonicInstalled()) return@withContext findModelRoot()
 
             check(root.mkdirs() || root.isDirectory) { "Nie można utworzyć katalogu modeli" }
