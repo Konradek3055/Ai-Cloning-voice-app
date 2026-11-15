@@ -6,16 +6,36 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
 import java.io.File
+import java.util.UUID
 
 /** Native in-process Supertonic 3 inference. No Python, Termux, or local HTTP server. */
-class SupertonicEngine : AutoCloseable {
+class SupertonicEngine(private val outputDir: File) : AutoCloseable {
     private var tts: OfflineTts? = null
     private var loadedFrom: String? = null
 
+    private val requiredFiles = listOf(
+        "duration_predictor.int8.onnx",
+        "text_encoder.int8.onnx",
+        "vector_estimator.int8.onnx",
+        "vocoder.int8.onnx",
+        "tts.json",
+        "unicode_indexer.bin",
+        "voice.bin"
+    )
+
     @Synchronized
     fun load(modelDir: File, numThreads: Int = 2) {
+        require(numThreads in 1..8) { "Nieprawidłowa liczba wątków CPU" }
         val path = modelDir.canonicalPath
         if (tts != null && loadedFrom == path) return
+
+        requiredFiles.forEach { name ->
+            val file = File(modelDir, name)
+            require(file.isFile && file.length() > 0L) {
+                "Brak pliku modelu lub pusty plik: $name"
+            }
+        }
+
         close()
         val cfg = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
@@ -33,33 +53,57 @@ class SupertonicEngine : AutoCloseable {
                 provider = "cpu"
             )
         )
-        tts = OfflineTts(config = cfg)
+
+        val candidate = OfflineTts(config = cfg)
+        try {
+            require(candidate.numSpeakers() >= 10) {
+                "Model Supertonic ma mniej niż 10 stylów głosu"
+            }
+            require(candidate.sampleRate() > 0) { "Silnik zwrócił nieprawidłową częstotliwość próbkowania" }
+        } catch (e: Exception) {
+            try { candidate.free() } catch (_: Exception) { }
+            throw e
+        }
+
+        tts = candidate
         loadedFrom = path
     }
 
     @Synchronized
-    fun generate(text: String, speakerId: Int, speed: Float, numSteps: Int, language: String): File {
+    fun generate(
+        text: String,
+        speakerId: Int,
+        speed: Float,
+        numSteps: Int,
+        language: String
+    ): File {
         require(text.isNotBlank()) { "Wpisz tekst do przeczytania" }
+        require(language in SUPPORTED_LANGUAGES) { "Nieobsługiwany język: $language" }
+        require(numSteps in 4..20) { "Liczba kroków musi mieścić się w zakresie 4–20" }
+
         val engine = tts ?: error("Model Supertonic nie został załadowany")
         val generated = engine.generateWithConfig(
             text,
             GenerationConfig(
                 sid = speakerId.coerceIn(0, 9),
                 speed = speed.coerceIn(0.6f, 1.6f),
-                numSteps = numSteps.coerceIn(4, 20),
+                numSteps = numSteps,
                 extra = mapOf("lang" to language)
             )
         )
-        val dir = File(outputBaseDir(), "audio").apply { mkdirs() }
-        val file = File(dir, "kinotts_${System.currentTimeMillis()}.wav")
-        check(generated.save(file.absolutePath)) { "Nie udało się zapisać WAV" }
-        return file
-    }
 
-    private fun outputBaseDir(): File {
-        // The app's private storage root is set by the caller through the model path.
-        return File(loadedFrom ?: error("Brak załadowanego modelu")).parentFile?.parentFile
-            ?: error("Nie można ustalić katalogu aplikacji")
+        check(generated.samples.isNotEmpty()) { "Supertonic zwrócił pusty dźwięk" }
+        check(generated.sampleRate > 0) { "Supertonic zwrócił nieprawidłowy sample rate" }
+        check(outputDir.mkdirs() || outputDir.isDirectory) {
+            "Nie można utworzyć katalogu na wygenerowane audio"
+        }
+
+        val file = File(outputDir, "kinotts_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}.wav")
+        if (!generated.save(file.absolutePath) || !file.isFile || file.length() <= 44L) {
+            file.delete()
+            error("Nie udało się zapisać poprawnego pliku WAV")
+        }
+        return file
     }
 
     @Synchronized
@@ -67,5 +111,13 @@ class SupertonicEngine : AutoCloseable {
         try { tts?.free() } catch (_: Exception) { }
         tts = null
         loadedFrom = null
+    }
+
+    companion object {
+        val SUPPORTED_LANGUAGES = setOf(
+            "ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr",
+            "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "nl", "pl",
+            "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi"
+        )
     }
 }

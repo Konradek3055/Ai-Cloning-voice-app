@@ -4,6 +4,7 @@ import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -28,9 +29,14 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import pl.kinotts.studio.analysis.AudioAnalysisResult
+import pl.kinotts.studio.analysis.AudioAnalyzer
 import pl.kinotts.studio.engine.SupertonicEngine
 import pl.kinotts.studio.models.ModelManager
+import pl.kinotts.studio.voices.VoiceProfile
+import pl.kinotts.studio.voices.VoiceProfileStore
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,13 +55,19 @@ private fun KinoTtsApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val models = remember { ModelManager(context.applicationContext) }
-    val supertonic = remember { SupertonicEngine() }
+    val analyzer = remember { AudioAnalyzer(context.applicationContext) }
+    val profileStore = remember { VoiceProfileStore(context.applicationContext) }
+    val supertonic = remember { SupertonicEngine(File(context.filesDir, "audio")) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
     var text by remember { mutableStateOf("Cześć! To jest test syntezy mowy w KinoTTS Studio.") }
     var selectedAudio by remember { mutableStateOf<Uri?>(null) }
     var selectedAudioName by remember { mutableStateOf("Nie wybrano pliku") }
+    var analysis by remember { mutableStateOf<AudioAnalysisResult?>(null) }
+    var profileName by remember { mutableStateOf("Mój głos") }
+    var consentConfirmed by remember { mutableStateOf(false) }
+    var profiles by remember { mutableStateOf(profileStore.list()) }
     var status by remember { mutableStateOf("Gotowy") }
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -69,11 +81,23 @@ private fun KinoTtsApp() {
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             try {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
             } catch (_: Exception) { }
             selectedAudio = uri
-            selectedAudioName = uri.lastPathSegment ?: "Wybrany plik audio/wideo"
-            status = "Plik wybrany. Analiza i klonowanie XTTS zostaną podłączone w natywnym silniku ONNX."
+            analysis = null
+            consentConfirmed = false
+            selectedAudioName = try {
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                    ?: uri.lastPathSegment
+                    ?: "Wybrany plik audio/wideo"
+            } catch (_: Exception) {
+                uri.lastPathSegment ?: "Wybrany plik audio/wideo"
+            }
+            status = "Plik wybrany. Możesz wykonać lokalną analizę audio."
         }
     }
 
@@ -109,8 +133,11 @@ private fun KinoTtsApp() {
                     title = {
                         Column {
                             Text("KinoTTS Studio", fontWeight = FontWeight.Bold)
-                            Text("Jedna aplikacja • lokalne modele", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "Lokalne modele • przetwarzanie na urządzeniu",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 )
@@ -135,7 +162,8 @@ private fun KinoTtsApp() {
             }
         ) { padding ->
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
+                modifier = Modifier.fillMaxSize().padding(padding)
+                    .verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 when (screen) {
@@ -153,15 +181,105 @@ private fun KinoTtsApp() {
                                         ) { Text(name) }
                                     }
                                 }
+
                                 if (engine == "XTTS-v2") {
-                                    Text("XTTS-v2 będzie uruchamiany wewnątrz APK przez ONNX Runtime. W tej paczce projektowej port pipeline'u ONNX wymaga dokończenia i testu ARM64 — nie uruchamia Termuxa ani serwera.", color = MaterialTheme.colorScheme.error)
-                                    OutlinedButton(onClick = { pickAudio.launch(arrayOf("audio/*", "video/mp4")) }, Modifier.fillMaxWidth()) {
-                                        Icon(Icons.Default.AudioFile, null)
+                                    Text(
+                                        "XTTS-v2: synteza i klonowanie nie są jeszcze podłączone. Poniżej działa przygotowanie próbki: dekodowanie, analiza jakości i zapis profilu w pamięci aplikacji.",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    OutlinedButton(
+                                        onClick = { pickAudio.launch(arrayOf("audio/*", "video/mp4")) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        enabled = !busy
+                                    ) {
+                                        Icon(Icons.Default.AudioFile, contentDescription = null)
                                         Spacer(Modifier.width(8.dp))
                                         Text("Wybierz MP3 / MP4 / WAV")
                                     }
                                     Text(selectedAudioName, style = MaterialTheme.typography.bodySmall)
-                                    Text("Po integracji silnik będzie analizował próbkę, zapisywał profile głosowe i klonował wyłącznie głos używany za zgodą właściciela.", style = MaterialTheme.typography.bodySmall)
+                                    Button(
+                                        onClick = {
+                                            val uri = selectedAudio
+                                            if (uri != null) scope.launch {
+                                                busy = true
+                                                progress = 0f
+                                                status = "Dekoduję i analizuję próbkę…"
+                                                try {
+                                                    analysis = withContext(Dispatchers.IO) {
+                                                        analyzer.analyze(uri) { value -> progress = value }
+                                                    }
+                                                    status = "Analiza zakończona. Próbka została przetworzona lokalnie."
+                                                } catch (e: Exception) {
+                                                    analysis = null
+                                                    status = "Błąd analizy: ${e.message ?: e::class.java.simpleName}"
+                                                } finally {
+                                                    busy = false
+                                                }
+                                            }
+                                        },
+                                        enabled = selectedAudio != null && !busy,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text(if (busy) "Analizuję…" else "Analizuj nagranie") }
+
+                                    analysis?.let { result ->
+                                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                                Text("Wynik analizy", style = MaterialTheme.typography.titleMedium)
+                                                Text("Czas: ${formatSeconds(result.durationSeconds)} • ${result.sampleRate} Hz • źródłowo ${result.sourceChannels} kan.")
+                                                Text("RMS: ${formatNumber(result.rmsDbfs)} dBFS • szczyt: ${formatNumber(result.peak)}")
+                                                Text("Próbki obcięte: ${formatNumber(result.clippingPercent)}% • cisza: ${formatNumber(result.silencePercent)}%")
+                                                Text("Zdekodowano ${result.monoSamples} próbek mono do WAV PCM16.", style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        }
+                                        OutlinedTextField(
+                                            value = profileName,
+                                            onValueChange = { profileName = it },
+                                            label = { Text("Nazwa profilu głosu") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true
+                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = consentConfirmed,
+                                                onCheckedChange = { consentConfirmed = it }
+                                            )
+                                            Text(
+                                                "To mój głos albo mam wyraźną zgodę właściciela nagrania.",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                scope.launch {
+                                                    busy = true
+                                                    try {
+                                                        withContext(Dispatchers.IO) {
+                                                            profileStore.save(
+                                                                profileName,
+                                                                result,
+                                                                language,
+                                                                consentConfirmed
+                                                            )
+                                                        }
+                                                        profiles = withContext(Dispatchers.IO) { profileStore.list() }
+                                                        consentConfirmed = false
+                                                        status = "Zapisano lokalną próbkę głosu. Profil nie jest jeszcze podłączony do syntezy XTTS."
+                                                    } catch (e: Exception) {
+                                                        status = "Błąd zapisu profilu: ${e.message ?: e::class.java.simpleName}"
+                                                    } finally {
+                                                        busy = false
+                                                    }
+                                                }
+                                            },
+                                            enabled = !busy && consentConfirmed && profileName.trim().length in 2..40,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("Zapisz próbkę jako profil") }
+                                    }
+                                    Text(
+                                        "Import i analiza nie klonują głosu. Właściwy pipeline XTTS ONNX wymaga jeszcze natywnej integracji i testu ARM64.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 } else {
                                     OutlinedTextField(
                                         value = text,
@@ -175,34 +293,42 @@ private fun KinoTtsApp() {
                                     Text("Język")
                                     var languageExpanded by remember { mutableStateOf(false) }
                                     ExposedDropdownMenuBox(expanded = languageExpanded, onExpandedChange = { languageExpanded = it }) {
-                                        OutlinedTextField(value = language, onValueChange = {}, readOnly = true,
-                                            modifier = Modifier.menuAnchor().fillMaxWidth(), label = { Text("Kod języka") })
+                                        OutlinedTextField(
+                                            value = language,
+                                            onValueChange = {},
+                                            readOnly = true,
+                                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                                            label = { Text("Kod języka") }
+                                        )
                                         ExposedDropdownMenu(expanded = languageExpanded, onDismissRequest = { languageExpanded = false }) {
-                                            listOf("pl", "en", "de", "fr", "es", "it", "cs", "uk").forEach { lang ->
-                                                DropdownMenuItem(text = { Text(lang) }, onClick = { language = lang; languageExpanded = false })
+                                            listOf("pl", "en", "de", "fr", "es", "it", "cs", "uk", "nl", "pt", "sv").forEach { lang ->
+                                                DropdownMenuItem(
+                                                    text = { Text(lang) },
+                                                    onClick = { language = lang; languageExpanded = false }
+                                                )
                                             }
                                         }
                                     }
-                                    Text("Tempo: ${"%.2f".format(speed)}×")
+                                    Text("Tempo: ${formatNumber(speed)}×")
                                     Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.7f..1.4f)
                                     Text("Jakość / kroki: $steps")
                                     Slider(value = steps.toFloat(), onValueChange = { steps = it.toInt() }, valueRange = 4f..16f, steps = 11)
                                 }
                             }
                         }
-                        Button(
-                            onClick = {
-                                if (engine == "XTTS-v2") {
-                                    status = "Silnik XTTS ONNX czeka na port i test w projekcie."
-                                } else {
+
+                        if (engine == "Supertonic 3") {
+                            Button(
+                                onClick = {
                                     scope.launch {
                                         busy = true
+                                        progress = 0f
                                         status = "Sprawdzam model Supertonic 3…"
                                         try {
                                             val modelDir = withContext(Dispatchers.IO) {
-                                                models.ensureSupertonic { p -> progress = p }
+                                                models.ensureSupertonic { value -> progress = value }
                                             }
-                                            status = "Ładuję Supertonic 3…"
+                                            status = "Ładuję model i generuję mowę…"
                                             val wav = withContext(Dispatchers.IO) {
                                                 supertonic.load(modelDir)
                                                 supertonic.generate(text, sid, speed, steps, language)
@@ -210,14 +336,17 @@ private fun KinoTtsApp() {
                                             output = wav
                                             status = "Gotowe: ${wav.name}"
                                         } catch (e: Exception) {
-                                            status = "Błąd: ${e.message ?: e::class.java.simpleName}"
-                                        } finally { busy = false }
+                                            status = "Błąd syntezy: ${e.message ?: e::class.java.simpleName}"
+                                        } finally {
+                                            busy = false
+                                        }
                                     }
-                                }
-                            },
-                            enabled = !busy && (engine == "XTTS-v2" || text.isNotBlank()),
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (busy) "Generuję…" else "Generuj mowę") }
+                                },
+                                enabled = !busy && text.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text(if (busy) "Pracuję…" else "Generuj mowę") }
+                        }
+
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         StatusCard(status)
                         output?.let { file ->
@@ -228,61 +357,114 @@ private fun KinoTtsApp() {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(onClick = {
                                             player?.release()
-                                            player = MediaPlayer().apply { setDataSource(file.absolutePath); prepare(); start() }
+                                            player = MediaPlayer().apply {
+                                                setDataSource(file.absolutePath)
+                                                prepare()
+                                                start()
+                                            }
                                         }) { Text("Odtwórz") }
                                         OutlinedButton(onClick = { exportAudio.launch(file.name) }) {
-                                            Text("Zapisz WAV w pamięci telefonu")
+                                            Text("Zapisz WAV")
                                         }
                                     }
                                 }
                             }
                         }
                     }
+
                     Screen.Voices -> {
                         Text("Biblioteka głosów", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Supertonic 3", style = MaterialTheme.typography.titleMedium)
-                            Text("10 gotowych stylów głosu (ID 0–9). Wybierz głos w Studio.")
-                            Text("Profile XTTS-v2 będą zapisywane lokalnie po ukończeniu natywnego silnika ONNX.", style = MaterialTheme.typography.bodySmall)
-                        } }
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Supertonic 3", style = MaterialTheme.typography.titleMedium)
+                                Text("10 gotowych stylów głosu (ID 0–9). Wybierz głos w Studio.")
+                            }
+                        }
+                        Text("Zapisane próbki", style = MaterialTheme.typography.titleMedium)
+                        if (profiles.isEmpty()) {
+                            Text("Nie zapisano jeszcze żadnej próbki.", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            profiles.forEach { profile -> VoiceProfileCard(profile) }
+                        }
+                        Text(
+                            "Profile zawierają lokalne nagrania referencyjne i analizę. Nie są jeszcze używane przez silnik XTTS.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+
                     Screen.Models -> {
                         Text("Menedżer modeli", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Supertonic 3 INT8", style = MaterialTheme.typography.titleMedium)
-                            Text(if (models.isSupertonicInstalled()) "Pobrany do pamięci aplikacji" else "Niepobrany — pobierze się przy pierwszej syntezie")
-                            Button(onClick = {
-                                scope.launch {
-                                    busy = true; status = "Pobieram Supertonic 3…"
-                                    try { withContext(Dispatchers.IO) { models.ensureSupertonic { p -> progress = p } }; status = "Supertonic 3 gotowy" }
-                                    catch (e: Exception) { status = "Błąd pobierania: ${e.message}" }
-                                    finally { busy = false }
-                                }
-                            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Pobierz / sprawdź model") }
-                        } }
-                        Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("XTTS-v2 ONNX INT8", style = MaterialTheme.typography.titleMedium)
-                            Text("Model wymaga zatwierdzenia licencji na Hugging Face i natywnego portu pipeline'u do Androida. Pliki modelu będą pobierane do prywatnego katalogu tej aplikacji, a nie do Termuxa.")
-                            Text("Postęp: wymaga integracji przez build agenta", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                        } }
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Supertonic 3 INT8", style = MaterialTheme.typography.titleMedium)
+                                Text(if (models.isSupertonicInstalled()) "Pobrany i zweryfikowany w pamięci aplikacji" else "Niepobrany — pobierze się przy pierwszej syntezie")
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            busy = true
+                                            progress = 0f
+                                            status = "Pobieram i weryfikuję Supertonic 3…"
+                                            try {
+                                                withContext(Dispatchers.IO) {
+                                                    models.ensureSupertonic { value -> progress = value }
+                                                }
+                                                status = "Model Supertonic 3 jest gotowy"
+                                            } catch (e: Exception) {
+                                                status = "Błąd pobierania: ${e.message ?: e::class.java.simpleName}"
+                                            } finally {
+                                                busy = false
+                                            }
+                                        }
+                                    },
+                                    enabled = !busy,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Pobierz / sprawdź model") }
+                            }
+                        }
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("XTTS-v2 ONNX", style = MaterialTheme.typography.titleMedium)
+                                Text("Silnik nie jest jeszcze zintegrowany. Nie pobieramy jego dużych plików, dopóki natywny pipeline nie będzie gotowy do ich użycia.")
+                            }
+                        }
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         StatusCard(status)
                     }
+
                     Screen.Settings -> {
                         Text("Ustawienia", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
-                            Text("Tryb CPU • ARM64 • modele w prywatnym katalogu aplikacji")
-                            Text("Modele są pobierane raz. Po pobraniu generowanie ma działać offline.")
-                            Text("Nie są wymagane: Termux, Ubuntu PRoot, Python ani lokalny serwer.")
-                        } }
-                        Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Prywatność i zgoda", style = MaterialTheme.typography.titleMedium)
-                            Text("Klonuj wyłącznie własny głos albo głos osoby, która wyraźnie się zgodziła. Nagrania i profile pozostają w prywatnych danych aplikacji.")
-                        } }
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
+                                Text("Supertonic 3: CPU • ARM64 • model w prywatnym katalogu aplikacji")
+                                Text("Po pobraniu model Supertonic generuje offline.")
+                                Text("Do syntezy Supertonic nie są wymagane Termux, Ubuntu PRoot, Python ani lokalny serwer.")
+                            }
+                        }
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Prywatność i zgoda", style = MaterialTheme.typography.titleMedium)
+                                Text("Próbki profili są zapisywane lokalnie. Zapis jest dostępny po potwierdzeniu, że to Twój głos albo masz wyraźną zgodę właściciela nagrania.")
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VoiceProfileCard(profile: VoiceProfile) {
+    Card {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(profile.name, style = MaterialTheme.typography.titleMedium)
+            Text("${formatSeconds(profile.durationSeconds)} • ${profile.sampleRate} Hz • język: ${profile.language}")
+            Text(
+                "RMS ${formatNumber(profile.rmsDbfs)} dBFS • clipping ${formatNumber(profile.clippingPercent)}% • cisza ${formatNumber(profile.silencePercent)}%",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
@@ -297,3 +479,6 @@ private fun StatusCard(status: String) {
         }
     }
 }
+
+private fun formatNumber(value: Float): String = String.format(Locale.US, "%.1f", value)
+private fun formatSeconds(value: Double): String = String.format(Locale.US, "%.1f s", value)
