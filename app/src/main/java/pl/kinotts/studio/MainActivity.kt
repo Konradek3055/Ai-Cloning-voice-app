@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -37,6 +38,7 @@ import pl.kinotts.studio.analysis.AudioAnalyzer
 import pl.kinotts.studio.engine.SupertonicEngine
 import pl.kinotts.studio.engine.XtTsOnnxRuntime
 import pl.kinotts.studio.models.ModelManager
+import pl.kinotts.studio.models.XttsModelManager
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
 import java.io.File
@@ -59,6 +61,7 @@ private fun KinoTtsApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val models = remember { ModelManager(context.applicationContext) }
+    val xttsModels = remember { XttsModelManager(context.applicationContext) }
     val analyzer = remember { AudioAnalyzer(context.applicationContext) }
     val profileStore = remember { VoiceProfileStore(context.applicationContext) }
     val supertonic = remember { SupertonicEngine(File(context.filesDir, "audio")) }
@@ -73,6 +76,12 @@ private fun KinoTtsApp() {
     var consentConfirmed by remember { mutableStateOf(false) }
     var profiles by remember { mutableStateOf(profileStore.list()) }
     var status by remember { mutableStateOf("Gotowy") }
+    var hfToken by remember { mutableStateOf("") }
+    var xttsInstalled by remember { mutableStateOf(xttsModels.isInstalled()) }
+    var xttsModelStatus by remember {
+        mutableStateOf(if (xttsInstalled) "Model XTTS jest zainstalowany." else "Model XTTS nie jest jeszcze pobrany.")
+    }
+    var xttsGraphInfo by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var sid by remember { mutableIntStateOf(0) }
@@ -478,9 +487,197 @@ private fun KinoTtsApp() {
                             }
                         }
                         Card {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("XTTS-v2 ONNX", style = MaterialTheme.typography.titleMedium)
-                                Text("Silnik nie jest jeszcze zintegrowany. Nie pobieramy jego dużych plików, dopóki natywny pipeline nie będzie gotowy do ich użycia.")
+                            Column(
+                                Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+
+                                Text(
+                                    "XTTS-v2 ONNX • GPT INT8",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+
+                                Text(
+                                    if (xttsInstalled)
+                                        "Model pobrany i zainstalowany w pamięci prywatnej aplikacji."
+                                    else
+                                        "Pobierz model z Hugging Face. Po instalacji pliki pozostaną na telefonie."
+                                )
+
+                                OutlinedTextField(
+                                    value = hfToken,
+                                    onValueChange = { hfToken = it },
+                                    label = { Text("Hugging Face token (hf_… )") },
+                                    supportingText = {
+                                        Text(
+                                            "Token jest używany tylko podczas pobierania. " +
+                                            "Nie zapisujemy go w plikach aplikacji."
+                                        )
+                                    },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    enabled = !busy,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Button(
+                                    onClick = {
+
+                                        val tokenForDownload = hfToken.trim()
+
+                                        hfToken = ""
+
+                                        scope.launch {
+
+                                            busy = true
+                                            progress = 0f
+                                            xttsGraphInfo = ""
+
+                                            xttsModelStatus =
+                                                "Pobieram i weryfikuję pliki XTTS-v2…"
+
+                                            try {
+
+                                                withContext(Dispatchers.IO) {
+
+                                                    xttsModels.downloadAndInstall(
+                                                        tokenForDownload
+                                                    ) { value ->
+                                                        progress = value
+                                                    }
+                                                }
+
+                                                xttsInstalled = true
+
+                                                xttsModelStatus =
+                                                    "Model XTTS-v2 został pobrany, sprawdzony i zainstalowany."
+
+                                                status =
+                                                    "Pakiet XTTS-v2 jest gotowy do testu grafów ONNX."
+
+                                            } catch (e: Exception) {
+
+                                                xttsModelStatus =
+                                                    "Błąd pobierania: " +
+                                                    (e.message ?: e::class.java.simpleName)
+
+                                            } finally {
+
+                                                hfToken = ""
+                                                busy = false
+                                            }
+                                        }
+                                    },
+                                    enabled = !busy && hfToken.trim().startsWith("hf_"),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        if (busy) "Pobieram model…"
+                                        else if (xttsInstalled)
+                                            "Pobierz ponownie model XTTS"
+                                        else
+                                            "Pobierz i zainstaluj XTTS (INT8)"
+                                    )
+                                }
+
+                                if (xttsInstalled) {
+
+                                    OutlinedButton(
+                                        onClick = {
+
+                                            scope.launch {
+
+                                                busy = true
+                                                xttsGraphInfo = ""
+
+                                                xttsModelStatus =
+                                                    "Otwieram grafy ONNX i sprawdzam ich wejścia/wyjścia…"
+
+                                                try {
+
+                                                    val report = withContext(Dispatchers.IO) {
+
+                                                        val sessions =
+                                                            XtTsOnnxRuntime.openSessions(
+                                                                xttsModels.modelDir(),
+                                                                numThreads = 2
+                                                            )
+
+                                                        try {
+
+                                                            val inputs =
+                                                                sessions.inputNames()
+                                                                    .entries
+                                                                    .joinToString("\n") {
+                                                                        "${it.key}: ${it.value.joinToString()}"
+                                                                    }
+
+                                                            val outputs =
+                                                                sessions.outputNames()
+                                                                    .entries
+                                                                    .joinToString("\n") {
+                                                                        "${it.key}: ${it.value.joinToString()}"
+                                                                    }
+
+                                                            "WEJŚCIA\n$inputs\n\nWYJŚCIA\n$outputs"
+
+                                                        } finally {
+
+                                                            sessions.close()
+                                                        }
+                                                    }
+
+                                                    xttsGraphInfo = report
+
+                                                    xttsModelStatus =
+                                                        "Wszystkie cztery grafy ONNX zostały otwarte i zamknięte poprawnie."
+
+                                                } catch (e: Exception) {
+
+                                                    xttsModelStatus =
+                                                        "Test ONNX nie powiódł się: " +
+                                                        (e.message ?: e::class.java.simpleName)
+
+                                                } finally {
+
+                                                    busy = false
+                                                }
+                                            }
+                                        },
+                                        enabled = !busy,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Sprawdź uruchomienie grafów ONNX")
+                                    }
+                                }
+
+                                Text(
+                                    xttsModelStatus,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+
+                                if (xttsGraphInfo.isNotBlank()) {
+
+                                    Text(
+                                        xttsGraphInfo,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+
+                                Text(
+                                    "Ważne: pobranie modelu i otwarcie grafów nie oznacza jeszcze gotowej syntezy. " +
+                                    "Pełny pipeline XTTS (audio referencyjne → conditioning → BPE → GPT z KV-cache → HiFi-GAN → WAV) " +
+                                    "nadal wymaga implementacji i testu generowania na tym telefonie.",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+
+                                Text(
+                                    "Wagi tego repozytorium są objęte CC BY-NC 4.0 — użytek niekomercyjny. " +
+                                    "Używaj wyłącznie własnego głosu albo nagrań z wyraźną zgodą właściciela.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
