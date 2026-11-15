@@ -56,7 +56,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
-            // Sherpa-ONNX 2.0.1 Android is built against ONNX Runtime 1.28.2.
+            // Maven Central Android AAR is 1.28.0; Sherpa-ONNX 2.0.1 native release uses ORT 1.28.2.
             // Keep Java/JNI and the shared native runtime aligned.
             pickFirsts += "**/libonnxruntime.so"
         }
@@ -76,7 +76,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // Match the ONNX Runtime version bundled by sherpa-onnx 2.0.1.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.2")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
     // Official sherpa-onnx Android AAR (Kotlin API + arm64 native runtime).
     implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {

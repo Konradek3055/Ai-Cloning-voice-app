@@ -95,6 +95,26 @@ class VoiceProfileStore(context: Context) {
         return profile
     }
 
+    @Synchronized
+    fun delete(id: String): Boolean {
+        require(runCatching { UUID.fromString(id) }.isSuccess) { "Nieprawidłowy identyfikator profilu" }
+        val profile = list().firstOrNull { it.id == id } ?: return false
+        val rootCanonical = root.canonicalFile
+        val wav = File(profile.wavPath).canonicalFile
+        require(wav.parentFile == rootCanonical && wav.extension.equals("wav", true)) {
+            "Plik próbki znajduje się poza katalogiem profili"
+        }
+        val remaining = list().filterNot { it.id == id }
+        val tmp = File(root, "profiles.json.part")
+        val json = JSONArray().apply { remaining.forEach { put(it.toJson()) } }
+        tmp.writeText(json.toString(2), Charsets.UTF_8)
+        check(tmp.renameTo(index) || (tmp.copyTo(index, overwrite = true).exists() && tmp.delete())) {
+            "Nie udało się zaktualizować listy profili"
+        }
+        if (wav.exists() && !wav.delete()) return false
+        return true
+    }
+
     private fun VoiceProfile.toJson() = JSONObject().apply {
         put("id", id)
         put("name", name)

@@ -132,6 +132,23 @@ class ModelManager(context: Context) {
             }
         }
 
+    /** Removes only Supertonic model data and known interrupted-install files. */
+    fun deleteSupertonic(): Boolean {
+        val targets = listOf(
+            supertonicDir,
+            File(root, "supertonic3.tar.bz2.part"),
+            File(root, "supertonic3-staging"),
+            File(root, "supertonic3-installing"),
+            File(root, "supertonic3-old")
+        )
+        targets.forEach { target ->
+            if (target.exists() && !target.deleteRecursively()) {
+                error("Nie udało się usunąć: ${target.name}")
+            }
+        }
+        return !isSupertonicInstalled()
+    }
+
     private fun findModelRoot(): File =
         findContainingModel(supertonicDir) ?: error("Brak wymaganych plików modelu Supertonic 3")
 
