@@ -800,7 +800,7 @@ private class XttsBpe(file: File) {
 
     // GPT-2 / Hugging Face ByteLevel pre-tokenization.
     private val byteLevelPattern = Regex(
-        "(?U)(?i:'s|'t|'re|'ve|'m|'ll|'d)| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"
+        "(?i:'s|'t|'re|'ve|'m|'ll|'d)| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"
     )
 
     init {
