@@ -15,6 +15,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import pl.kinotts.studio.storage.KinoStorage
 
 /**
  * Authenticated in-app downloader for the INT8 XTTSv2 ONNX pack.
@@ -26,16 +27,13 @@ import java.security.MessageDigest
  */
 class XttsModelManager(context: Context) {
 
-    private val root =
-        File(context.applicationContext.filesDir, "models").apply {
-            mkdirs()
-        }
+    private val appContext = context.applicationContext
+    private val root = KinoStorage.modelsRoot(appContext).apply { mkdirs() }
 
     private val staging =
         File(root, ".xttsv2-staging")
 
-    private val installed =
-        File(root, "xttsv2")
+    private val installed = KinoStorage.modelsDir(appContext)
 
     private data class RemoteFile(
         val path: String,
@@ -84,6 +82,8 @@ class XttsModelManager(context: Context) {
     ): File = withContext(Dispatchers.IO) {
 
         val coroutineContext = currentCoroutineContext()
+
+        KinoStorage.ensureDirectories(appContext)
 
         val cleanToken = token.trim()
 

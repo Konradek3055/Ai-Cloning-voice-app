@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import pl.kinotts.studio.analysis.AudioAnalysisResult
+import pl.kinotts.studio.storage.KinoStorage
 import java.io.File
 import java.util.UUID
 
@@ -23,7 +24,8 @@ data class VoiceProfile(
 )
 
 class VoiceProfileStore(context: Context) {
-    private val root = File(context.applicationContext.filesDir, "voice_profiles").apply { mkdirs() }
+    private val appContext = context.applicationContext
+    private val root = KinoStorage.voicesDir(appContext).apply { mkdirs() }
     private val index = File(root, "profiles.json")
 
     @Synchronized
@@ -51,6 +53,7 @@ class VoiceProfileStore(context: Context) {
         consentConfirmed: Boolean
     ): VoiceProfile {
         require(consentConfirmed) { "Potwierdź prawo do użycia nagrania" }
+        KinoStorage.ensureDirectories(appContext)
         val cleanName = name.trim().replace(Regex("\\s+"), " ")
         require(cleanName.length in 2..40) { "Nazwa profilu musi mieć 2–40 znaków" }
         require(analysis.wavFile.isFile && analysis.wavFile.length() > 44L) { "Brak próbki WAV do zapisania" }
