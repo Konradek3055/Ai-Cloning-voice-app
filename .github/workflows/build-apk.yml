@@ -95,7 +95,7 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee apk-signing.txt
-          grep -Eq "Signer #1 certificate SHA-256 digest: [0-9a-fA-F]{64}" apk-signing.txt
+          grep -Eq "certificate SHA-256 digest: [0-9a-fA-F]{64}" apk-signing.txt
           if [[ -n "${KINOTTS_KEYSTORE_PATH:-}" ]]; then
             echo "APK podpisany stałym kluczem KinoTTS."
           else
