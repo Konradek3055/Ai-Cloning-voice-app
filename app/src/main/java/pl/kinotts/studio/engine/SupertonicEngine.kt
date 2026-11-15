@@ -79,7 +79,7 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
     ): File {
         require(text.isNotBlank()) { "Wpisz tekst do przeczytania" }
         require(language in SUPPORTED_LANGUAGES) { "Nieobsługiwany język: $language" }
-        require(numSteps in 4..20) { "Liczba kroków musi mieścić się w zakresie 4–20" }
+        require(numSteps in 4..256) { "Liczba kroków musi mieścić się w zakresie 4–256" }
 
         val engine = tts ?: error("Model Supertonic nie został załadowany")
         val generated = engine.generateWithConfig(

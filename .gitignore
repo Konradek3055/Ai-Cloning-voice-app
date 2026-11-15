@@ -32,3 +32,21 @@ output-metadata.json
 
 # Google Services
 google-services.json
+
+# Local audio and downloaded models
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.onnx
+*.part
+voice_profiles/
+models/
+local-recordings/
+audio/
+
+# Local secrets and backups
+.env
+.env.*
+!.env.example
+*.bak-*

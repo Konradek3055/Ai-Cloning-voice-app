@@ -1,5 +1,7 @@
 package pl.kinotts.studio
 
+import android.app.ActivityManager
+import android.os.Debug
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
@@ -27,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pl.kinotts.studio.analysis.AudioAnalysisResult
@@ -74,6 +77,14 @@ private fun KinoTtsApp() {
     var sid by remember { mutableIntStateOf(0) }
     var speed by remember { mutableFloatStateOf(1f) }
     var steps by remember { mutableIntStateOf(8) }
+    var customStepsEnabled by remember { mutableStateOf(false) }
+    var customStepsText by remember { mutableStateOf("160") }
+    val customStepValue = customStepsText.toIntOrNull()
+    val effectiveSteps = if (customStepsEnabled) customStepValue ?: steps else steps
+    val stepsValid = !customStepsEnabled ||
+        (customStepValue != null && customStepValue in 129..256)
+    var ramStats by remember { mutableStateOf("Odczyt pamięci…") }
+    var ramWarning by remember { mutableStateOf(false) }
     var language by remember { mutableStateOf("pl") }
     var output by remember { mutableStateOf<File?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -116,6 +127,22 @@ private fun KinoTtsApp() {
                     status = "Błąd zapisu: ${e.message ?: e::class.java.simpleName}"
                 }
             }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val manager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as ActivityManager
+        val memory = ActivityManager.MemoryInfo()
+        while (true) {
+            manager.getMemoryInfo(memory)
+            val appMb = Debug.getPss() / 1024.0
+            val availableMb = memory.availMem / (1024.0 * 1024.0)
+            val totalMb = memory.totalMem / (1024.0 * 1024.0)
+            ramStats = String.format(Locale.US,
+                "Aplikacja: %.0f MB • wolna RAM: %.0f / %.0f MB",
+                appMb, availableMb, totalMb)
+            ramWarning = memory.lowMemory || availableMb < 500.0
+            delay(2500)
         }
     }
 
@@ -311,8 +338,28 @@ private fun KinoTtsApp() {
                                     }
                                     Text("Tempo: ${formatNumber(speed)}×")
                                     Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.7f..1.4f)
-                                    Text("Jakość / kroki: $steps")
-                                    Slider(value = steps.toFloat(), onValueChange = { steps = it.toInt() }, valueRange = 4f..16f, steps = 11)
+                                    Text("Kroki: ${if (customStepsEnabled) effectiveSteps else steps}")
+                                    Slider(value = steps.toFloat(),
+                                        onValueChange = { steps = it.toInt() },
+                                        valueRange = 4f..128f, steps = 123)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Checkbox(customStepsEnabled, { customStepsEnabled = it })
+                                        Text("Custom — powyżej 128")
+                                    }
+                                    if (customStepsEnabled) {
+                                        OutlinedTextField(
+                                            value = customStepsText,
+                                            onValueChange = { customStepsText = it.filter(Char::isDigit).take(3) },
+                                            label = { Text("Kroki (129–256)") },
+                                            isError = !stepsValid,
+                                            supportingText = {
+                                                Text(if (stepsValid) "Więcej kroków oznacza dłuższe generowanie."
+                                                    else "Wpisz wartość od 129 do 256.")
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -331,7 +378,7 @@ private fun KinoTtsApp() {
                                             status = "Ładuję model i generuję mowę…"
                                             val wav = withContext(Dispatchers.IO) {
                                                 supertonic.load(modelDir)
-                                                supertonic.generate(text, sid, speed, steps, language)
+                                                supertonic.generate(text, sid, speed, effectiveSteps, language)
                                             }
                                             output = wav
                                             status = "Gotowe: ${wav.name}"
@@ -342,7 +389,7 @@ private fun KinoTtsApp() {
                                         }
                                     }
                                 },
-                                enabled = !busy && text.isNotBlank(),
+                                enabled = !busy && text.isNotBlank() && stepsValid,
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text(if (busy) "Pracuję…" else "Generuj mowę") }
                         }
@@ -437,8 +484,14 @@ private fun KinoTtsApp() {
                         Card {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
-                                Text("Supertonic 3: CPU • ARM64 • model w prywatnym katalogu aplikacji")
+                                Text("Silnik: CPU • ARM64 • model w prywatnym katalogu aplikacji")
+                                Text(ramStats)
+                                if (ramWarning) Text(
+                                    "Mało dostępnej pamięci RAM. Zamknij zbędne aplikacje.",
+                                    color = MaterialTheme.colorScheme.error
+                                )
                                 Text("Po pobraniu model Supertonic generuje offline.")
+                                Text("NPU nie jest obecnie obsługiwane przez tę integrację.")
                                 Text("Do syntezy Supertonic nie są wymagane Termux, Ubuntu PRoot, Python ani lokalny serwer.")
                             }
                         }
