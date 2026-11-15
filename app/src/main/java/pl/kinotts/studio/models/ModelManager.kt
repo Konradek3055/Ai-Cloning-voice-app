@@ -104,7 +104,7 @@ class ModelManager(context: Context) {
 
                 val extractedRoot = findContainingModel(staging)
                     ?: error("Archiwum nie zawiera kompletnego modelu Supertonic 3")
-                check(extractedRoot.copyRecursively(installing, overwrite = true).exists()) {
+                check(extractedRoot.copyRecursively(installing, overwrite = true)) {
                     "Nie udało się przygotować modelu do instalacji"
                 }
                 check(findContainingModel(installing) != null) { "Model po rozpakowaniu jest niekompletny" }
