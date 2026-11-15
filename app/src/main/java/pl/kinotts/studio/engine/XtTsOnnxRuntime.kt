@@ -16,17 +16,16 @@ data class OrtRuntimeCheck(
 /**
  * ONNX Runtime bootstrap and XTTS graph-session owner.
  *
- * Sherpa-ONNX 2.0.1 bundles a 1.28.2 libonnxruntime.so. The app deliberately
- * packages the newer 1.32.0 runtime and checks the actual native version at
- * runtime. ONNX Runtime keeps its older C API versions available for native
- * clients built against earlier releases.
+ * Sherpa-ONNX 2.0.1 Android is built against ONNX Runtime 1.28.2.
+ * Use the matching Java/JNI version so both engines share one compatible
+ * native ONNX Runtime library.
  *
  * This class loads XTTS graphs. It does not claim to synthesize speech by
  * itself: the BPE, feature extraction, GPT KV-cache loop and vocoder pipeline
  * must call these sessions in the next implementation layer.
  */
 object XtTsOnnxRuntime {
-    const val EXPECTED_VERSION = "1.32.0"
+    const val EXPECTED_VERSION = "1.28.2"
 
     @Volatile
     private var environment: OrtEnvironment? = null
