@@ -29,10 +29,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK tools
-        uses: android-actions/setup-android@v3
 
-      - name: Install required Android SDK packages
+      - name: Set up Android SDK packages
         run: |
           set -euo pipefail
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
