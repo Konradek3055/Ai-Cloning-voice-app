@@ -104,12 +104,6 @@ private fun KinoTtsApp() {
     var sid by remember { mutableIntStateOf(0) }
     var speed by remember { mutableFloatStateOf(1f) }
     var steps by remember { mutableIntStateOf(8) }
-    var customStepsEnabled by remember { mutableStateOf(false) }
-    var customStepsText by remember { mutableStateOf("160") }
-    val customStepValue = customStepsText.toIntOrNull()
-    val effectiveSteps = if (customStepsEnabled) customStepValue ?: steps else steps
-    val stepsValid = !customStepsEnabled ||
-        (customStepValue != null && customStepValue in 129..256)
     var ramStats by remember { mutableStateOf("Odczyt pamięci…") }
     var ramWarning by remember { mutableStateOf(false) }
     var ortStatus by remember { mutableStateOf("Sprawdzanie ONNX Runtime…") }
@@ -174,9 +168,11 @@ private fun KinoTtsApp() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        ortStatus = withContext(Dispatchers.IO) {
-            XtTsOnnxRuntime.diagnose().message
+    LaunchedEffect(engine) {
+        ortStatus = if (engine == "XTTS-v2") {
+            withContext(Dispatchers.IO) { XtTsOnnxRuntime.diagnose().message }
+        } else {
+            "Niezaładowany — aktywny jest Supertonic 3."
         }
     }
 
@@ -451,28 +447,10 @@ private fun KinoTtsApp() {
                                     }
                                     Text("Tempo: ${formatNumber(speed)}×")
                                     Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.7f..1.4f)
-                                    Text("Kroki: ${if (customStepsEnabled) effectiveSteps else steps}")
+                                    Text("Kroki: $steps")
                                     Slider(value = steps.toFloat(),
                                         onValueChange = { steps = it.toInt() },
                                         valueRange = 4f..128f, steps = 123)
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Checkbox(customStepsEnabled, { customStepsEnabled = it })
-                                        Text("Custom — powyżej 128")
-                                    }
-                                    if (customStepsEnabled) {
-                                        OutlinedTextField(
-                                            value = customStepsText,
-                                            onValueChange = { customStepsText = it.filter(Char::isDigit).take(3) },
-                                            label = { Text("Kroki (129–256)") },
-                                            isError = !stepsValid,
-                                            supportingText = {
-                                                Text(if (stepsValid) "Więcej kroków oznacza dłuższe generowanie."
-                                                    else "Wpisz wartość od 129 do 256.")
-                                            },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            singleLine = true
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -491,10 +469,14 @@ private fun KinoTtsApp() {
                                             status = "Ładuję model i generuję mowę…"
                                             val wav = withContext(Dispatchers.IO) {
                                                 supertonic.load(modelDir)
-                                                supertonic.generate(text, sid, speed, effectiveSteps, language)
+                                                supertonic.generate(text, sid, speed, steps, language)
                                             }
                                             output = wav
                                             status = "Gotowe: ${wav.name}"
+                                        } catch (e: LinkageError) {
+                                            status = "Błąd biblioteki natywnej Supertonic: ${e.message ?: e.javaClass.simpleName}"
+                                        } catch (e: OutOfMemoryError) {
+                                            status = "Za mało pamięci dla syntezy Supertonic. Skróć tekst i zamknij aplikacje działające w tle."
                                         } catch (e: Exception) {
                                             status = "Błąd syntezy: ${e.message ?: e::class.java.simpleName}"
                                         } finally {
@@ -502,7 +484,7 @@ private fun KinoTtsApp() {
                                         }
                                     }
                                 },
-                                enabled = !busy && text.isNotBlank() && stepsValid,
+                                enabled = !busy && text.isNotBlank(),
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text(if (busy) "Pracuję…" else "Generuj mowę") }
                         }

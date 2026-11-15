@@ -56,8 +56,8 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
-            // Sherpa 2.0.1 also contains libonnxruntime.so (1.28.2).
-            // The ORT 1.32.0 dependency is declared first and is checked at runtime.
+            // Sherpa-ONNX 2.0.1 Android is built against ONNX Runtime 1.28.2.
+            // Keep Java/JNI and the shared native runtime aligned.
             pickFirsts += "**/libonnxruntime.so"
         }
         resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1")
@@ -75,8 +75,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    // Keep this first: it provides the Java API/JNI and the single ORT 1.32.0 runtime.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.32.0")
+    // Match the ONNX Runtime version bundled by sherpa-onnx 2.0.1.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.2")
 
     // Official sherpa-onnx Android AAR (Kotlin API + arm64 native runtime).
     implementation("com.github.k2-fsa:sherpa-onnx:2.0.1") {

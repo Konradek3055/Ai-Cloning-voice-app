@@ -54,15 +54,30 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
             )
         )
 
-        val candidate = OfflineTts(config = cfg)
+        val candidate = try {
+            OfflineTts(config = cfg)
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "Nie udało się zainicjalizować Supertonic przez Sherpa-ONNX: " +
+                    (e.message ?: e.javaClass.simpleName), e
+            )
+        } catch (e: LinkageError) {
+            throw IllegalStateException(
+                "Brak lub konflikt biblioteki natywnej Sherpa-ONNX/ONNX Runtime: " +
+                    (e.message ?: e.javaClass.simpleName), e
+            )
+        }
         try {
             require(candidate.numSpeakers() >= 10) {
                 "Model Supertonic ma mniej niż 10 stylów głosu"
             }
             require(candidate.sampleRate() > 0) { "Silnik zwrócił nieprawidłową częstotliwość próbkowania" }
         } catch (e: Exception) {
-            try { candidate.free() } catch (_: Exception) { }
+            try { candidate.free() } catch (_: Throwable) { }
             throw e
+        } catch (e: LinkageError) {
+            try { candidate.free() } catch (_: Throwable) { }
+            throw IllegalStateException("Błąd natywny podczas sprawdzania modelu Supertonic.", e)
         }
 
         tts = candidate
@@ -79,7 +94,7 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
     ): File {
         require(text.isNotBlank()) { "Wpisz tekst do przeczytania" }
         require(language in SUPPORTED_LANGUAGES) { "Nieobsługiwany język: $language" }
-        require(numSteps in 4..256) { "Liczba kroków musi mieścić się w zakresie 4–256" }
+        require(numSteps in 4..128) { "Liczba kroków musi mieścić się w zakresie 4–128" }
 
         val engine = tts ?: error("Model Supertonic nie został załadowany")
         val generated = engine.generateWithConfig(
@@ -108,7 +123,11 @@ class SupertonicEngine(private val outputDir: File) : AutoCloseable {
 
     @Synchronized
     override fun close() {
-        try { tts?.free() } catch (_: Exception) { }
+        try {
+            tts?.free()
+        } catch (_: Exception) {
+        } catch (_: LinkageError) {
+        }
         tts = null
         loadedFrom = null
     }
