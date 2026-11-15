@@ -65,10 +65,15 @@ data class XttsGptConfig(
 class XttsSynthesizer(
     private val modelDir: File,
     private val outputDir: File,
-    private val numThreads: Int = 2
+    private val numThreads: Int = 2,
+    initialExecutionProvider: String = "cpu"
 ) : Closeable {
     private val cancelled = AtomicBoolean(false)
     private val loadLock = Any()
+    @Volatile private var requestedExecutionProvider: String = initialExecutionProvider
+    @Volatile var executionProviderStatus: String =
+        if (initialExecutionProvider == "nnapi") "NNAPI — oczekuje na załadowanie modelu" else "CPU — gotowy"
+        private set
     private val random = Random()
     private var env: OrtEnvironment? = null
     private var sessions: XtTsOnnxSessions? = null
@@ -121,10 +126,66 @@ class XttsSynthesizer(
             textEmbedding = readNpy(File(modelDir, "embeddings/text_embedding.npy"), intArrayOf(6681, 1024))
             textPosEmbedding = readNpy(File(modelDir, "embeddings/text_pos_embedding.npy"), intArrayOf(404, 1024))
             env = XtTsOnnxRuntime.environment()
-            sessions = XtTsOnnxRuntime.openSessions(modelDir, numThreads)
+            sessions = if (requestedExecutionProvider == "nnapi") {
+                try {
+                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = true).also {
+                        executionProviderStatus = "NNAPI EP zarejestrowany — przydział CPU/GPU/NPU zależy od sterownika i operatorów"
+                    }
+                } catch (error: Exception) {
+                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                        executionProviderStatus = "CPU fallback — NNAPI nie uruchomiło sesji: ${(error.message ?: error.javaClass.simpleName).take(120)}"
+                    }
+                } catch (error: LinkageError) {
+                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                        executionProviderStatus = "CPU fallback — brak biblioteki NNAPI: ${(error.message ?: error.javaClass.simpleName).take(120)}"
+                    }
+                }
+            } else {
+                XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                    executionProviderStatus = "CPU — aktywny"
+                }
+            }
             validateGraphContract(sessions!!)
             outputDir.mkdirs()
         }
+    }
+
+    /** Changes the XTTS provider while idle; releases old sessions before reopening. */
+    fun setExecutionProvider(provider: String) {
+        require(provider == "cpu" || provider == "nnapi") { "Nieznany backend XTTS: $provider" }
+        synchronized(loadLock) {
+            check(!closed) { "Silnik XTTS został zamknięty." }
+            if (requestedExecutionProvider == provider) return
+            unloadLocked()
+            requestedExecutionProvider = provider
+            executionProviderStatus = if (provider == "nnapi")
+                "NNAPI — oczekuje na załadowanie modelu" else "CPU — oczekuje na załadowanie modelu"
+        }
+    }
+
+    /** Releases model tensors and sessions but keeps this synthesizer reusable. */
+    fun unload() {
+        synchronized(loadLock) {
+            if (closed) return
+            unloadLocked()
+            executionProviderStatus = if (requestedExecutionProvider == "nnapi")
+                "NNAPI — model odładowany" else "CPU — model odładowany"
+        }
+    }
+
+    private fun unloadLocked() {
+        cancelled.set(true)
+        cachedVoice = null
+        sessions?.close(); sessions = null
+        tokenizer = null
+        startTextToken = -1
+        stopTextToken = -1
+        melNorms = FloatArray(0)
+        melEmbedding = FloatArray(0)
+        melPosEmbedding = FloatArray(0)
+        textEmbedding = FloatArray(0)
+        textPosEmbedding = FloatArray(0)
+        env = null
     }
 
     /** Cancels the current generation at the next inference boundary. */
@@ -382,19 +443,39 @@ class XttsSynthesizer(
     }
 
     private fun flatten(value: Any?): FloatArray {
-        val out = ArrayList<Float>()
-        fun visit(v: Any?) {
-            when {
-                v == null -> Unit
-                v is Number -> out.add(v.toFloat())
-                v is FloatArray -> v.forEach { out.add(it) }
-                v is DoubleArray -> v.forEach { out.add(it.toFloat()) }
-                v.javaClass.isArray -> for (i in 0 until JArray.getLength(v)) visit(JArray.get(v, i))
-                else -> error("Nieobsługiwany typ wyjścia ONNX: ${v.javaClass.name}")
+        // First count, then fill one primitive array. Avoids ArrayList<Float> boxing
+        // for the large GPT KV-cache tensors returned at every decoding step.
+        var itemCount = 0
+        fun countItems(v: Any?) {
+            when (v) {
+                null -> Unit
+                is Number -> itemCount = Math.addExact(itemCount, 1)
+                is FloatArray -> itemCount = Math.addExact(itemCount, v.size)
+                is DoubleArray -> itemCount = Math.addExact(itemCount, v.size)
+                else -> {
+                    if (!v.javaClass.isArray) error("Nieobsługiwany typ wyjścia ONNX: ${v.javaClass.name}")
+                    for (i in 0 until JArray.getLength(v)) countItems(JArray.get(v, i))
+                }
             }
         }
-        visit(value)
-        return out.toFloatArray()
+        countItems(value)
+        val out = FloatArray(itemCount)
+        var offset = 0
+        fun writeItems(v: Any?) {
+            when (v) {
+                null -> Unit
+                is Number -> out[offset++] = v.toFloat()
+                is FloatArray -> {
+                    v.copyInto(out, destinationOffset = offset)
+                    offset += v.size
+                }
+                is DoubleArray -> for (item in v) out[offset++] = item.toFloat()
+                else -> for (i in 0 until JArray.getLength(v)) writeItems(JArray.get(v, i))
+            }
+        }
+        writeItems(value)
+        check(offset == itemCount) { "Niepełne spłaszczenie wyniku ONNX." }
+        return out
     }
 
     private fun readNpy(file: File, expectedShape: IntArray): FloatArray {
@@ -408,7 +489,16 @@ class XttsSynthesizer(
     private fun timeScale(latents: List<FloatArray>, speed: Float): FloatArray {
         val count = latents.size
         val outCount = max(1, floor(count / speed.toDouble()).toInt())
-        if (outCount == count) return latents.flatMap { it.asIterable() }.toFloatArray()
+        if (outCount == count) {
+            val out = FloatArray(count * 1024)
+            var offset = 0
+            for (latent in latents) {
+                require(latent.size == 1024) { "Nieprawidłowy wymiar wektora latentów." }
+                latent.copyInto(out, destinationOffset = offset)
+                offset += latent.size
+            }
+            return out
+        }
         val out = FloatArray(outCount * 1024)
         for (t in 0 until outCount) {
             val source = if (outCount == 1) 0.0 else t.toDouble() * (count - 1) / (outCount - 1)
@@ -427,12 +517,9 @@ class XttsSynthesizer(
     override fun close() {
         synchronized(loadLock) {
             if (closed) return
+            unloadLocked()
             closed = true
-            cachedVoice = null
-            sessions?.close(); sessions = null
-            melEmbedding = FloatArray(0); melPosEmbedding = FloatArray(0)
-            textEmbedding = FloatArray(0); textPosEmbedding = FloatArray(0); melNorms = FloatArray(0)
-            env = null
+            executionProviderStatus = "Zamknięty"
         }
     }
 

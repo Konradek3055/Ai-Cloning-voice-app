@@ -16,7 +16,7 @@ data class OrtRuntimeCheck(
 /**
  * ONNX Runtime bootstrap and XTTS graph-session owner.
  *
- * Sherpa-ONNX 2.0.1 Android is built against ONNX Runtime 1.28.2.
+ * Maven Central Android AAR is 1.28.0; Sherpa-ONNX 2.0.1 release notes identify native ORT 1.28.2.
  * Use the matching Java/JNI version so both engines share one compatible
  * native ONNX Runtime library.
  *
@@ -25,7 +25,7 @@ data class OrtRuntimeCheck(
  * must call these sessions in the next implementation layer.
  */
 object XtTsOnnxRuntime {
-    const val EXPECTED_VERSION = "1.28.2"
+    const val EXPECTED_VERSION = "1.28.x"
 
     @Volatile
     private var environment: OrtEnvironment? = null
@@ -42,7 +42,7 @@ object XtTsOnnxRuntime {
                 }
 
             val actualVersion = ort.version
-            if (actualVersion != EXPECTED_VERSION) {
+            if (!actualVersion.startsWith("1.28.")) {
                 OrtRuntimeCheck(
                     ready = false,
                     version = actualVersion,
@@ -83,7 +83,7 @@ object XtTsOnnxRuntime {
      * Opens the four XTTS-v2 ONNX graphs from an installed model pack.
      * Uses one CPU thread pool per graph, with a conservative 1..4 thread cap.
      */
-    fun openSessions(modelDir: File, numThreads: Int = 2): XtTsOnnxSessions {
+    fun openSessions(modelDir: File, numThreads: Int = 2, useNnapi: Boolean = false): XtTsOnnxSessions {
         require(numThreads in 1..4) { "Liczba wątków XTTS musi mieścić się w zakresie 1–4." }
         require(modelDir.isDirectory) { "Brak katalogu modeli XTTS: ${modelDir.absolutePath}" }
 
@@ -123,6 +123,7 @@ object XtTsOnnxRuntime {
                 options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
                 options.setCPUArenaAllocator(true)
                 options.setMemoryPatternOptimization(true)
+                if (useNnapi) options.addNnapi()
                 val session = ort.createSession(file.absolutePath, options)
                 opened.add(session to options)
                 return session

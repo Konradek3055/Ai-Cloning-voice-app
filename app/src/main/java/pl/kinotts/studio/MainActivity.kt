@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -72,10 +73,16 @@ private fun KinoTtsApp() {
     val scope = rememberCoroutineScope()
     val models = remember { ModelManager(context.applicationContext) }
     val xttsModels = remember { XttsModelManager(context.applicationContext) }
+    val xttsPreferences = remember {
+        context.getSharedPreferences("kinotts_settings", android.content.Context.MODE_PRIVATE)
+    }
+    var xttsExecutionProvider by remember {
+        mutableStateOf(if (xttsPreferences.getString("xtts_execution_provider", "cpu") == "nnapi") "nnapi" else "cpu")
+    }
     val analyzer = remember { AudioAnalyzer(context.applicationContext) }
     val profileStore = remember { VoiceProfileStore(context.applicationContext) }
     val supertonic = remember { SupertonicEngine(KinoStorage.outputDir(context).apply { mkdirs() }) }
-    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), KinoStorage.outputDir(context).apply { mkdirs() }) }
+    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), KinoStorage.outputDir(context).apply { mkdirs() }, initialExecutionProvider = xttsExecutionProvider) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
@@ -89,6 +96,8 @@ private fun KinoTtsApp() {
     var xttsChosenProfileId by remember { mutableStateOf("") }
     var xttsSynthesizing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Gotowy") }
+    var statusVisible by remember { mutableStateOf(true) }
+    var pendingModelDelete by remember { mutableStateOf<String?>(null) }
     var hfToken by remember { mutableStateOf(HfTokenStore.load(context).orEmpty()) }
     var xttsInstalled by remember { mutableStateOf(xttsModels.isInstalled()) }
     var xttsModelStatus by remember {
@@ -152,6 +161,14 @@ private fun KinoTtsApp() {
         }
     }
 
+    LaunchedEffect(status, busy) {
+        statusVisible = true
+        if (!busy && status != "Gotowy") {
+            delay(6500)
+            if (!busy) statusVisible = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         val manager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as ActivityManager
         val memory = ActivityManager.MemoryInfo()
@@ -185,6 +202,57 @@ private fun KinoTtsApp() {
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
+        pendingModelDelete?.let { targetModel ->
+            AlertDialog(
+                onDismissRequest = { pendingModelDelete = null },
+                title = { Text("Usunąć model?") },
+                text = {
+                    Text(
+                        if (targetModel == "xtts")
+                            "Model XTTS-v2 zostanie usunięty z Documents/KinoTTS/Models. Profile głosu i wygenerowane nagrania pozostaną."
+                        else
+                            "Model Supertonic 3 zostanie usunięty z Documents/KinoTTS/Models. Wygenerowane nagrania pozostaną."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingModelDelete = null
+                        scope.launch {
+                            busy = true
+                            progress = 0f
+                            status = if (targetModel == "xtts") "Usuwam model XTTS-v2…" else "Usuwam model Supertonic 3…"
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    if (targetModel == "xtts") {
+                                        xttsRuntime.unload()
+                                        check(xttsModels.deleteInstalled()) { "Nie udało się całkowicie usunąć modelu XTTS." }
+                                    } else {
+                                        supertonic.close()
+                                        check(models.deleteSupertonic()) { "Nie udało się całkowicie usunąć modelu Supertonic." }
+                                    }
+                                }
+                                if (targetModel == "xtts") {
+                                    xttsInstalled = false
+                                    xttsGraphInfo = ""
+                                    xttsModelStatus = "Model XTTS nie jest jeszcze pobrany."
+                                    status = "Usunięto model XTTS-v2."
+                                } else {
+                                    supertonicModelStatus = "Model Supertonic nie jest jeszcze pobrany."
+                                    status = "Usunięto model Supertonic 3."
+                                }
+                            } catch (e: Exception) {
+                                status = "Błąd usuwania modelu: ${e.message ?: e::class.java.simpleName}"
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    }) { Text("Usuń") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingModelDelete = null }) { Text("Anuluj") }
+                }
+            )
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -210,23 +278,23 @@ private fun KinoTtsApp() {
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("XTTS-v2", fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.width(8.dp))
+                                Text("XTTS-v2", modifier = Modifier.width(88.dp), fontWeight = FontWeight.Bold, maxLines = 1)
                                 Text(
                                     xttsModelStatus,
                                     modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Supertonic 3", fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.width(8.dp))
+                                Text("Supertonic 3", modifier = Modifier.width(88.dp), fontWeight = FontWeight.Bold, maxLines = 1)
                                 Text(
                                     supertonicModelStatus,
                                     modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             if (busy) {
@@ -274,7 +342,26 @@ private fun KinoTtsApp() {
                                     listOf("XTTS-v2", "Supertonic 3").forEachIndexed { index, name ->
                                         SegmentedButton(
                                             selected = engine == name,
-                                            onClick = { engine = name },
+                                            onClick = {
+                                                if (!busy && engine != name) {
+                                                    scope.launch {
+                                                        busy = true
+                                                        status = "Przełączam silnik na $name…"
+                                                        try {
+                                                            withContext(Dispatchers.IO) {
+                                                                if (name == "XTTS-v2") supertonic.close()
+                                                                else xttsRuntime.unload()
+                                                            }
+                                                            engine = name
+                                                            status = "Przełączono silnik: $name"
+                                                        } catch (e: Exception) {
+                                                            status = "Nie udało się przełączyć silnika: ${e.message ?: e::class.java.simpleName}"
+                                                        } finally {
+                                                            busy = false
+                                                        }
+                                                    }
+                                                }
+                                            },
                                             shape = SegmentedButtonDefaults.itemShape(index, 2)
                                         ) { Text(name) }
                                     }
@@ -300,7 +387,9 @@ private fun KinoTtsApp() {
                                                 busy = true; progress = 0f; status = "Dekoduję próbkę audio…"
                                                 try {
                                                     analysis = withContext(Dispatchers.IO) {
-                                                        analyzer.analyze(uri) { value -> scope.launch { progress = value } }
+                                                        analyzer.analyze(uri) { value -> if (ProgressLimiter.allow("analysis", 90L) || value <= 0f || value >= 1f) {
+                                                            scope.launch(Dispatchers.Main.immediate) { progress = value.coerceIn(0f, 1f) }
+                                                        } }
                                                     }
                                                     status = "Próbka gotowa. Zapisz ją jako profil głosu."
                                                 } catch (e: Exception) {
@@ -397,7 +486,9 @@ private fun KinoTtsApp() {
                                                 try {
                                                     val wav = withContext(Dispatchers.IO) {
                                                         xttsRuntime.synthesize(text, language, File(selected.wavPath), speed) { value ->
-                                                            scope.launch { progress = value }
+                                                            if (ProgressLimiter.allow("xtts", 90L) || value <= 0f || value >= 1f) {
+                                                                scope.launch(Dispatchers.Main.immediate) { progress = value.coerceIn(0f, 1f) }
+                                                            }
                                                         }
                                                     }
                                                     output = wav
@@ -464,7 +555,9 @@ private fun KinoTtsApp() {
                                         status = "Sprawdzam model Supertonic 3…"
                                         try {
                                             val modelDir = withContext(Dispatchers.IO) {
-                                                models.ensureSupertonic { value -> progress = value }
+                                                models.ensureSupertonic { value -> if (ProgressLimiter.allow("supertonic-synth", 100L) || value <= 0f || value >= 1f) {
+                                                    scope.launch(Dispatchers.Main.immediate) { progress = value.coerceIn(0f, 1f) }
+                                                } }
                                             }
                                             status = "Ładuję model i generuję mowę…"
                                             val wav = withContext(Dispatchers.IO) {
@@ -490,7 +583,7 @@ private fun KinoTtsApp() {
                         }
 
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        StatusCard(status)
+                        if (statusVisible || busy) StatusCard(status)
                         output?.let { file ->
                             Card {
                                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -526,7 +619,20 @@ private fun KinoTtsApp() {
                         if (profiles.isEmpty()) {
                             Text("Nie zapisano jeszcze żadnej próbki.", style = MaterialTheme.typography.bodySmall)
                         } else {
-                            profiles.forEach { profile -> VoiceProfileCard(profile) }
+                            profiles.forEach { profile ->
+                                VoiceProfileCard(profile, onDelete = {
+                                    if (!busy) scope.launch {
+                                        try {
+                                            val deleted = withContext(Dispatchers.IO) { profileStore.delete(profile.id) }
+                                            profiles = withContext(Dispatchers.IO) { profileStore.list() }
+                                            if (xttsChosenProfileId == profile.id) xttsChosenProfileId = profiles.firstOrNull()?.id.orEmpty()
+                                            status = if (deleted) "Usunięto próbkę: ${profile.name}" else "Usunięto wpis próbki; plik wymaga kontroli"
+                                        } catch (e: Exception) {
+                                            status = "Nie udało się usunąć próbki: ${e.message ?: e::class.java.simpleName}"
+                                        }
+                                    }
+                                }, enabled = !busy)
+                            }
                         }
                         Text(
                             "Zapisane próbki mogą służyć jako profile referencyjne dla lokalnego silnika XTTS-v2.",
@@ -553,8 +659,12 @@ private fun KinoTtsApp() {
                                             try {
                                                 withContext(Dispatchers.IO) {
                                                     models.ensureSupertonic { value ->
-                                                        progress = value
-                                                        progressEta = estimateRemainingLabel(value, startedAt)
+                                                        if (ProgressLimiter.allow("supertonic-download", 120L) || value <= 0f || value >= 1f) {
+                                                            scope.launch(Dispatchers.Main.immediate) {
+                                                                progress = value.coerceIn(0f, 1f)
+                                                                progressEta = estimateRemainingLabel(value, startedAt)
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 supertonicModelStatus = "Model gotowy — zapisany w Documents/KinoTTS/Models"
@@ -570,6 +680,11 @@ private fun KinoTtsApp() {
                                     enabled = !busy,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Pobierz / sprawdź model") }
+                                if (models.isSupertonicInstalled()) {
+                                    OutlinedButton(onClick = { pendingModelDelete = "supertonic" }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                                        Text("Usuń model Supertonic 3")
+                                    }
+                                }
                             }
                         }
                         Card {
@@ -605,6 +720,26 @@ private fun KinoTtsApp() {
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        try {
+                                            HfTokenStore.save(context, hfToken)
+                                            status = "Token Hugging Face zapisany bezpiecznie na tym urządzeniu."
+                                        } catch (e: Exception) {
+                                            status = "Nie udało się zapisać tokena: ${e.message ?: e::class.java.simpleName}"
+                                        }
+                                    }, enabled = !busy && hfToken.trim().startsWith("hf_"), modifier = Modifier.weight(1f)) {
+                                        Text("Zapisz token")
+                                    }
+                                    OutlinedButton(onClick = {
+                                        HfTokenStore.clear(context)
+                                        hfToken = ""
+                                        status = "Usunięto zapisany token Hugging Face."
+                                    }, enabled = !busy, modifier = Modifier.weight(1f)) {
+                                        Text("Usuń token")
+                                    }
+                                }
+
                                 Button(
                                     onClick = {
 
@@ -629,8 +764,12 @@ private fun KinoTtsApp() {
                                                     xttsModels.downloadAndInstall(
                                                         tokenForDownload
                                                     ) { value ->
-                                                        progress = value
-                                                        progressEta = estimateRemainingLabel(value, startedAt)
+                                                        if (ProgressLimiter.allow("xtts-download", 120L) || value <= 0f || value >= 1f) {
+                                                            scope.launch(Dispatchers.Main.immediate) {
+                                                                progress = value.coerceIn(0f, 1f)
+                                                                progressEta = estimateRemainingLabel(value, startedAt)
+                                                            }
+                                                        }
                                                     }
                                                 }
 
@@ -666,6 +805,9 @@ private fun KinoTtsApp() {
                                 }
 
                                 if (xttsInstalled) {
+                                    OutlinedButton(onClick = { pendingModelDelete = "xtts" }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                                        Text("Usuń model XTTS-v2")
+                                    }
 
                                     OutlinedButton(
                                         onClick = {
@@ -758,7 +900,7 @@ private fun KinoTtsApp() {
                             }
                         }
                         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        StatusCard(status)
+                        if (statusVisible || busy) StatusCard(status)
                     }
 
                     Screen.Settings -> {
@@ -775,9 +917,44 @@ private fun KinoTtsApp() {
                                 Text("Android nie usuwa Documents/KinoTTS przy odinstalowaniu aplikacji. Usunięcie tych plików wymaga ręcznego skasowania folderu w menedżerze plików.", style = MaterialTheme.typography.bodySmall)
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text("Przetwarzanie", style = MaterialTheme.typography.titleMedium)
-                                Text("Silnik: CPU • ARM64 • modele w Documents/KinoTTS")
+                                Text("XTTS: ${xttsRuntime.executionProviderStatus}")
                                 Text(ramStats)
                                 Text("ONNX Runtime: $ortStatus")
+                                Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Text("Backend XTTS", style = MaterialTheme.typography.titleSmall)
+                                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                                    listOf("cpu" to "CPU", "nnapi" to "NNAPI").forEachIndexed { index, option ->
+                                        SegmentedButton(
+                                            selected = xttsExecutionProvider == option.first,
+                                            onClick = {
+                                                if (!busy && xttsExecutionProvider != option.first) {
+                                                    scope.launch {
+                                                        busy = true
+                                                        try {
+                                                            withContext(Dispatchers.IO) {
+                                                                xttsRuntime.setExecutionProvider(option.first)
+                                                            }
+                                                            xttsExecutionProvider = option.first
+                                                            xttsPreferences.edit().putString("xtts_execution_provider", option.first).apply()
+                                                            status = if (option.first == "nnapi") "Wybrano eksperymentalny backend NNAPI dla XTTS." else "Wybrano backend CPU dla XTTS."
+                                                        } catch (e: Exception) {
+                                                            status = "Nie udało się zmienić backendu: ${e.message ?: e::class.java.simpleName}"
+                                                        } finally {
+                                                            busy = false
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            enabled = !busy,
+                                            shape = SegmentedButtonDefaults.itemShape(index, 2)
+                                        ) { Text(option.second) }
+                                    }
+                                }
+                                Text(
+                                    "NNAPI jest trybem eksperymentalnym. Android może rozdzielić obliczenia między CPU, GPU i NPU; wybór NNAPI nie gwarantuje, że sterownik faktycznie użyje NPU. W razie błędu inicjalizacji XTTS wróci do CPU.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                                 if (ramWarning) Text(
                                     "Mało dostępnej pamięci RAM. Zamknij zbędne aplikacje.",
                                     color = MaterialTheme.colorScheme.error
@@ -800,7 +977,7 @@ private fun KinoTtsApp() {
 }
 
 @Composable
-private fun VoiceProfileCard(profile: VoiceProfile) {
+private fun VoiceProfileCard(profile: VoiceProfile, onDelete: () -> Unit, enabled: Boolean) {
     Card {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(profile.name, style = MaterialTheme.typography.titleMedium)
@@ -809,6 +986,9 @@ private fun VoiceProfileCard(profile: VoiceProfile) {
                 "RMS ${formatNumber(profile.rmsDbfs)} dBFS • clipping ${formatNumber(profile.clippingPercent)}% • cisza ${formatNumber(profile.silencePercent)}%",
                 style = MaterialTheme.typography.bodySmall
             )
+            OutlinedButton(onClick = onDelete, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                Text("Usuń próbkę")
+            }
         }
     }
 }
@@ -820,6 +1000,19 @@ private fun StatusCard(status: String) {
             Icon(Icons.Default.Tune, contentDescription = null)
             Spacer(Modifier.width(10.dp))
             Text(status, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+private object ProgressLimiter {
+    private val stamps = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    fun allow(key: String, intervalMs: Long): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val stamp = stamps.getOrPut(key) { java.util.concurrent.atomic.AtomicLong(0L) }
+        while (true) {
+            val old = stamp.get()
+            if (now - old < intervalMs) return false
+            if (stamp.compareAndSet(old, now)) return true
         }
     }
 }

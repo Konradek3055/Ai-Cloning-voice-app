@@ -73,6 +73,19 @@ class XttsModelManager(context: Context) {
         }
     }
 
+    /** Removes installed XTTS data and only its known staging/backup directories. */
+    fun deleteInstalled(): Boolean {
+        val rootCanonical = root.canonicalFile
+        val targets = listOf(installed, staging, File(root, "xttsv2-old"))
+        targets.forEach { target ->
+            require(target.canonicalFile.parentFile == rootCanonical) { "Nieprawidłowa ścieżka modelu XTTS" }
+            if (target.exists() && !target.deleteRecursively()) {
+                error("Nie udało się usunąć: ${target.name}")
+            }
+        }
+        return !isInstalled()
+    }
+
     /**
      * Pobiera model z Hugging Face i instaluje go atomowo.
      */
