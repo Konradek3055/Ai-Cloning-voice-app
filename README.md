@@ -16,3 +16,7 @@ Offline Android text-to-speech using Supertonic 3.
 
 Do not commit private recordings, downloaded models, signing keys,
 credentials, or personal data to this public repository.
+
+## Information
+
+This project is created with help from ChatGPT and Claude
