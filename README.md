@@ -5,7 +5,6 @@ Offline Android text-to-speech using Supertonic 3.
 ## Current status
 
 - Supertonic 3 runs locally on Android ARM64.
-- Polish speech generation is supported.
 - Audio import and local quality analysis are available.
 - Reference recordings can be stored locally.
 - ONNX Runtime Android 1.28.2 Java/JNI runtime check and XTTS four-session loader are added.
