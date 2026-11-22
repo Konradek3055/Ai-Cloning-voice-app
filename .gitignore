@@ -62,3 +62,13 @@ _KinoTTS_*Backup*/
 _XTTS_*BACKUP*/
 *.bak
 kinotts-release.jks
+# Patch scripts and local backups (never commit)
+.kinotts_patch_backup/
+.kinotts-*/
+_KinoTTS_*/
+_XTTS_*/
+kinotts_*.py
+*.bak*
+STATUS.md.bak*
+*.p12
+*.pem

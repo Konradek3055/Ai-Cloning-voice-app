@@ -22,7 +22,7 @@ android {
 
     defaultConfig {
         applicationId = "pl.kinotts.studio"
-        minSdk = 28
+        minSdk = 30
         targetSdk = 35
         versionCode = 3
         versionName = "2.1.0-standalone"

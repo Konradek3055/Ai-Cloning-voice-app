@@ -111,7 +111,7 @@ jobs:
           test -x "$AAPT"
           "$AAPT" dump badging "$APK" | tee apk-info.txt
           grep -q "package: name='pl.kinotts.studio'" apk-info.txt
-          grep -q "sdkVersion:'28'" apk-info.txt
+          grep -q "sdkVersion:'30'" apk-info.txt
           APK_ENTRIES="$(unzip -Z1 "$APK")"
 
           printf '%s\n' "$APK_ENTRIES" | grep -Eq '^lib/arm64-v8a/.*\.so$'

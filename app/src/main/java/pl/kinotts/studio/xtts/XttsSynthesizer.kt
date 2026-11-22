@@ -85,6 +85,9 @@ class XttsSynthesizer(
 ) : Closeable {
     private val cancelled = AtomicBoolean(false)
     private val loadLock = Any()
+    private val runLock = Any()
+    private inline fun <T> exclusive(block: () -> T): T =
+        synchronized(runLock) { synchronized(loadLock) { block() } }
     @Volatile private var requestedExecutionProvider: String = initialExecutionProvider
     @Volatile var executionProviderStatus: String =
         if (initialExecutionProvider == "nnapi") "NNAPI — oczekuje na załadowanie modelu" else "CPU — gotowy"
@@ -168,7 +171,9 @@ class XttsSynthesizer(
     /** Changes the XTTS provider while idle; releases old sessions before reopening. */
     fun setExecutionProvider(provider: String) {
         require(provider == "cpu" || provider == "nnapi") { "Nieznany backend XTTS: $provider" }
-        synchronized(loadLock) {
+        if (requestedExecutionProvider == provider) return
+        cancelled.set(true)
+        exclusive {
             check(!closed) { "Silnik XTTS został zamknięty." }
             if (requestedExecutionProvider == provider) return
             unloadLocked()
@@ -180,7 +185,8 @@ class XttsSynthesizer(
 
     /** Releases model tensors and sessions but keeps this synthesizer reusable. */
     fun unload() {
-        synchronized(loadLock) {
+        cancelled.set(true)
+        exclusive {
             if (closed) return
             unloadLocked()
             executionProviderStatus = if (requestedExecutionProvider == "nnapi")
@@ -249,13 +255,19 @@ class XttsSynthesizer(
         sampling: XttsSamplingSettings = XttsSamplingSettings(),
         onProgress: (Float) -> Unit = {}
     ): File {
-        cancelled.set(false)
-        open()
-        val voice = createVoice(referenceWav) { p -> onProgress(p.fraction) }
-        return synthesize(text, language, voice, speed, sampling) { p -> onProgress(p) }
+        return synchronized(runLock) {
+            cancelled.set(false)
+            open()
+            val voice = createVoice(referenceWav) { p -> onProgress(p.fraction) }
+            synthesize(text, language, voice, speed, sampling) { p -> onProgress(p) }
+        }
     }
 
-    /** Synthesis with an already-computed voice profile. */
+    /**
+     * Synteza z gotowym profilem głosu. Długi tekst jest dzielony na fragmenty
+     * (XTTS przyjmuje ok. 400 tokenów tekstu i ok. 600 tokenów audio na jedno przejście),
+     * każdy fragment jest syntezowany osobno, a całość łączona krótką pauzą.
+     */
     fun synthesize(
         text: String,
         language: String,
@@ -263,7 +275,7 @@ class XttsSynthesizer(
         speed: Float = 1f,
         sampling: XttsSamplingSettings = XttsSamplingSettings(),
         onProgress: (Float) -> Unit = {}
-    ): File {
+    ): File = synchronized(runLock) {
         cancelled.set(false)
         open()
         require(text.isNotBlank()) { "Wpisz tekst do syntezy." }
@@ -271,64 +283,156 @@ class XttsSynthesizer(
         require(voice.conditioning.size == 32 * 1024 && voice.speakerEmbedding.size == 512) { "Nieprawidłowy profil głosu." }
         val lang = language.substringBefore('-').lowercase(Locale.ROOT)
         require(lang in SUPPORTED_LANGUAGES) { "XTTS nie obsługuje języka: $lang" }
-        val encoded = tokenizer!!.encode(text, lang)
-        require(encoded.isNotEmpty()) { "Tokenizer nie zwrócił tokenów tekstu." }
-        require(encoded.size + 2 <= 402) { "Tekst jest za długi dla XTTS. Podziel go na krótsze fragmenty." }
+        val chunks = splitText(text, MAX_CHUNK_CHARS)
+        require(chunks.isNotEmpty()) { "Wpisz tekst do syntezy." }
         ensureActive()
         onProgress(0.30f)
+
+        val pieces = ArrayList<FloatArray>(chunks.size)
+        for ((index, chunk) in chunks.withIndex()) {
+            ensureActive()
+            pieces.add(
+                synthesizeChunk(chunk, lang, voice, speed, sampling) { p ->
+                    onProgress(0.30f + 0.67f * ((index + p) / chunks.size))
+                }
+            )
+        }
+
+        val gap = if (pieces.size > 1) 3600 else 0 // 150 ms przy 24 kHz
+        var total = gap * (pieces.size - 1)
+        for (piece in pieces) total += piece.size
+        val waveform = FloatArray(total)
+        var offset = 0
+        for ((i, piece) in pieces.withIndex()) {
+            piece.copyInto(waveform, offset)
+            offset += piece.size
+            if (i < pieces.size - 1) offset += gap
+        }
+        ensureActive()
+        val outFile = File(outputDir, "xtts_${System.currentTimeMillis()}.wav")
+        Wav.writePcm16(outFile, waveform, 24000)
+        onProgress(1f)
+        outFile
+    }
+
+    /** Jeden fragment tekstu -> przebieg 24 kHz (bez zapisu do pliku). Postęp 0..1. */
+    private fun synthesizeChunk(
+        text: String,
+        lang: String,
+        voice: XttsVoice,
+        speed: Float,
+        sampling: XttsSamplingSettings,
+        onProgress: (Float) -> Unit
+    ): FloatArray {
+        val encoded = tokenizer!!.encode(text, lang)
+        require(encoded.isNotEmpty()) { "Tokenizer nie zwrócił tokenów tekstu." }
+        require(encoded.size + 2 <= 402) { "Fragment tekstu jest za długi dla XTTS." }
+        ensureActive()
+        onProgress(0.02f)
         val prefix = buildPrefix(voice.conditioning, encoded)
         val prefixLength = prefix.size / 1024
-        var cache = Array(config.layers * 2) { FloatArray(0) }
-        var cacheLength = 0
-        var step = runGpt(prefix, prefixLength, cache, prefixLength)
-        cache = step.cache
-        cacheLength = prefixLength
-        var logits = step.logits
-        var hidden = step.hidden
         val generatedIds = ArrayList<Int>(config.maxAudioTokens)
         val latentVectors = ArrayList<FloatArray>(config.maxAudioTokens)
         val history = ArrayList<Int>(prefixLength + config.maxAudioTokens)
         repeat(prefixLength) { history.add(1) }
         var melPosition = 1
         val maximum = min(config.maxAudioTokens, 605)
+        val settings = sampling.validated()
 
-        for (iteration in 0 until maximum) {
-            ensureActive()
-            val selected = sample(logits, history, sampling.validated())
-            if (selected == config.stopAudio) break
-            if (selected !in 0 until 1024) error("GPT wygenerował nieprawidłowy kod audio: $selected")
-            generatedIds.add(selected)
-            latentVectors.add(hidden.copyOf())
-            history.add(selected)
-            onProgress(0.30f + 0.57f * ((iteration + 1f) / maximum))
-            if (iteration == maximum - 1) break
-
-            require(melPosition < 608) { "Przekroczono limit pozycji embeddingu audio XTTS." }
-            val nextEmbedding = FloatArray(1024)
-            val embOffset = selected * 1024
-            val posOffset = melPosition * 1024
-            for (j in 0 until 1024) nextEmbedding[j] = melEmbedding[embOffset + j] + melPosEmbedding[posOffset + j]
-            melPosition++
-            step = runGpt(nextEmbedding, 1, cache, cacheLength + 1)
+        var cache: GptCache? = null
+        try {
+            var step = runGpt(prefix, prefixLength, null, prefixLength)
             cache = step.cache
-            cacheLength++
-            logits = step.logits
-            hidden = step.hidden
+            var cacheLength = prefixLength
+            var logits = step.logits
+            var hidden = step.hidden
+
+            for (iteration in 0 until maximum) {
+                ensureActive()
+                val selected = sample(logits, history, settings)
+                if (selected == config.stopAudio) break
+                if (selected !in 0 until 1024) error("GPT wygenerował nieprawidłowy kod audio: $selected")
+                generatedIds.add(selected)
+                latentVectors.add(hidden.copyOf())
+                history.add(selected)
+                onProgress(0.02f + 0.88f * ((iteration + 1f) / maximum))
+                if (iteration == maximum - 1) break
+
+                require(melPosition < 608) { "Przekroczono limit pozycji embeddingu audio XTTS." }
+                val nextEmbedding = FloatArray(1024)
+                val embOffset = selected * 1024
+                val posOffset = melPosition * 1024
+                for (j in 0 until 1024) nextEmbedding[j] = melEmbedding[embOffset + j] + melPosEmbedding[posOffset + j]
+                melPosition++
+
+                val previous = cache
+                step = runGpt(nextEmbedding, 1, previous, cacheLength + 1)
+                cache = step.cache
+                previous?.close()
+                cacheLength++
+                logits = step.logits
+                hidden = step.hidden
+            }
+        } finally {
+            cache?.close()
         }
+
         require(latentVectors.isNotEmpty()) { "XTTS nie wygenerował żadnych tokenów audio. Spróbuj inną próbkę lub tekst." }
         ensureActive()
-        onProgress(0.90f)
+        onProgress(0.92f)
         val latents = timeScale(latentVectors, speed)
         val waveform = runVocoder(latents, voice.speakerEmbedding)
         ensureActive()
         require(waveform.isNotEmpty()) { "HiFi-GAN zwrócił pusty dźwięk." }
-        val outFile = File(outputDir, "xtts_${System.currentTimeMillis()}.wav")
-        Wav.writePcm16(outFile, waveform, 24000)
         onProgress(1f)
-        return outFile
+        return waveform
     }
 
-    private data class GptStep(val logits: FloatArray, val hidden: FloatArray, val cache: Array<FloatArray>)
+    /** Dzieli tekst na fragmenty <= maxChars, po granicach zdań (a w ostateczności po przecinkach/spacjach). */
+    private fun splitText(text: String, maxChars: Int): List<String> {
+        val sentences = text.trim()
+            .split(Regex("(?<=[.!?…])\\s+|\\n+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        val result = ArrayList<String>()
+        val current = StringBuilder()
+        fun flush() {
+            if (current.isNotBlank()) result.add(current.toString().trim())
+            current.setLength(0)
+        }
+        for (sentence in sentences) {
+            for (part in breakLong(sentence, maxChars)) {
+                if (current.isNotEmpty() && current.length + 1 + part.length > maxChars) flush()
+                if (current.isNotEmpty()) current.append(' ')
+                current.append(part)
+            }
+        }
+        flush()
+        return result
+    }
+
+    private fun breakLong(sentence: String, maxChars: Int): List<String> {
+        if (sentence.length <= maxChars) return listOf(sentence)
+        val parts = ArrayList<String>()
+        var rest = sentence
+        while (rest.length > maxChars) {
+            var cut = rest.lastIndexOfAny(charArrayOf(',', ';', ':'), maxChars - 1)
+            if (cut < maxChars / 3) cut = rest.lastIndexOf(' ', maxChars - 1)
+            if (cut < maxChars / 3) cut = maxChars - 1
+            parts.add(rest.substring(0, cut + 1).trim())
+            rest = rest.substring(cut + 1).trim()
+        }
+        if (rest.isNotEmpty()) parts.add(rest)
+        return parts
+    }
+
+    private class GptStep(val logits: FloatArray, val hidden: FloatArray, val cache: GptCache)
+
+    /** Trzyma wyjściowe tensory jednego kroku GPT, żeby podać je wprost jako KV-cache następnego kroku (bez kopiowania). */
+    private class GptCache(private val result: OrtSession.Result) : Closeable {
+        fun tensor(name: String): OnnxTensor = result.get(name).get() as OnnxTensor
+        override fun close() { runCatching { result.close() } }
+    }
 
     private fun buildPrefix(cond: FloatArray, tokens: List<Int>): FloatArray {
         val ids = ArrayList<Int>(tokens.size + 2)
@@ -351,40 +455,62 @@ class XttsSynthesizer(
         return result
     }
 
-    private fun runGpt(input: FloatArray, inputLength: Int, cache: Array<FloatArray>, totalMaskLength: Int): GptStep {
+    private fun runGpt(input: FloatArray, inputLength: Int, cache: GptCache?, totalMaskLength: Int): GptStep {
         val session = sessions!!.gptDecoder
+        val owned = ArrayList<OnnxTensor>() // tylko tensory utworzone tutaj; cache należy do poprzedniego wyniku
         val feed = LinkedHashMap<String, OnnxTensor>()
-        val names = LinkedHashSet<String>()
+        val outputs = LinkedHashSet<String>()
+        outputs.add("logits")
+        outputs.add("hidden_states")
         try {
-            feed["inputs_embeds"] = tensor(input, longArrayOf(1, inputLength.toLong(), 1024))
-            feed["attention_mask"] = tensor(FloatArray(totalMaskLength) { 1f }, longArrayOf(1, totalMaskLength.toLong()))
+            val embeds = tensor(input, longArrayOf(1, inputLength.toLong(), 1024))
+            owned.add(embeds)
+            feed["inputs_embeds"] = embeds
+            val mask = tensor(FloatArray(totalMaskLength) { 1f }, longArrayOf(1, totalMaskLength.toLong()))
+            owned.add(mask)
+            feed["attention_mask"] = mask
             for (layer in 0 until config.layers) {
-                val pastKey = cache[layer * 2]
-                val pastValue = cache[layer * 2 + 1]
-                val pastLength = if (pastKey.isEmpty()) 0 else pastKey.size / (16 * 64)
-                feed["past_key_$layer"] = tensor(pastKey, longArrayOf(1, 16, pastLength.toLong(), 64))
-                feed["past_value_$layer"] = tensor(pastValue, longArrayOf(1, 16, pastLength.toLong(), 64))
-                names.add("present_key_$layer"); names.add("present_value_$layer")
-            }
-            val outputs = LinkedHashSet<String>().apply {
-                add("logits"); add("hidden_states"); addAll(names)
-            }
-            session.run(feed, outputs).use { result ->
-                val logits = flatten(result.get("logits").get().value)
-                val hiddenAll = flatten(result.get("hidden_states").get().value)
-                require(logits.size >= config.audioTokens && hiddenAll.size >= 1024) { "Wyjście GPT ma nieprawidłowy kształt." }
-                val newCache = Array(config.layers * 2) { FloatArray(0) }
-                for (layer in 0 until config.layers) {
-                    newCache[layer * 2] = flatten(result.get("present_key_$layer").get().value)
-                    newCache[layer * 2 + 1] = flatten(result.get("present_value_$layer").get().value)
+                val keyName = "present_key_$layer"
+                val valueName = "present_value_$layer"
+                if (cache == null) {
+                    val emptyShape = longArrayOf(1, 16, 0, 64)
+                    val emptyKey = tensor(FloatArray(0), emptyShape)
+                    owned.add(emptyKey)
+                    feed["past_key_$layer"] = emptyKey
+                    val emptyValue = tensor(FloatArray(0), emptyShape)
+                    owned.add(emptyValue)
+                    feed["past_value_$layer"] = emptyValue
+                } else {
+                    feed["past_key_$layer"] = cache.tensor(keyName)
+                    feed["past_value_$layer"] = cache.tensor(valueName)
                 }
-                val lastLogits = logits.copyOfRange(logits.size - config.audioTokens, logits.size)
-                val lastHidden = hiddenAll.copyOfRange(hiddenAll.size - 1024, hiddenAll.size)
-                return GptStep(lastLogits, lastHidden, newCache)
+                outputs.add(keyName)
+                outputs.add(valueName)
+            }
+            val result = session.run(feed, outputs)
+            var handedOver = false
+            try {
+                val logits = lastValues(result.get("logits").get() as OnnxTensor, config.audioTokens)
+                val hidden = lastValues(result.get("hidden_states").get() as OnnxTensor, 1024)
+                handedOver = true
+                return GptStep(logits, hidden, GptCache(result))
+            } finally {
+                if (!handedOver) runCatching { result.close() }
             }
         } finally {
-            feed.values.forEach { runCatching { it.close() } }
+            owned.forEach { runCatching { it.close() } }
         }
+    }
+
+    /** Ostatnie `count` wartości tensora (ostatni wiersz logits / ostatni hidden state) bez budowania tablic zagnieżdżonych. */
+    private fun lastValues(tensor: OnnxTensor, count: Int): FloatArray {
+        val buffer = tensor.floatBuffer
+        val total = buffer.remaining()
+        require(total >= count) { "Wyjście GPT ma nieprawidłowy kształt." }
+        buffer.position(buffer.position() + total - count)
+        val out = FloatArray(count)
+        buffer.get(out)
+        return out
     }
 
     private fun sample(source: FloatArray, history: List<Int>, settings: XttsSamplingSettings): Int {
@@ -548,15 +674,22 @@ class XttsSynthesizer(
     private fun ensureActive() { if (cancelled.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Synteza XTTS została anulowana.") }
 
     override fun close() {
-        synchronized(loadLock) {
-            if (closed) return
-            unloadLocked()
-            closed = true
-            executionProviderStatus = "Zamknięty"
-        }
+        // Zamykanie w tle: nie blokuje wątku UI, a czeka aż trwająca synteza się przerwie.
+        cancelled.set(true)
+        Thread({
+            exclusive {
+                if (!closed) {
+                    unloadLocked()
+                    closed = true
+                    executionProviderStatus = "Zamknięty"
+                }
+            }
+        }, "xtts-close").apply { isDaemon = true }.start()
     }
 
     companion object {
+        /** Maks. długość jednego fragmentu tekstu (limit Coqui dla większości języków ~200-250 znaków). */
+        private const val MAX_CHUNK_CHARS = 200
         val SUPPORTED_LANGUAGES = setOf("ar", "cs", "de", "en", "es", "fr", "hi", "hu", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh")
     }
 }
