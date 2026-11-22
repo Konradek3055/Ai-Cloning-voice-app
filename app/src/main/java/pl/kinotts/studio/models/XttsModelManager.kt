@@ -488,31 +488,33 @@ class XttsModelManager(context: Context) {
         address: String,
         token: String
     ): HttpURLConnection {
-
-        return (URL(address).openConnection()
-            as HttpURLConnection).apply {
-
-            connectTimeout = 30_000
-            readTimeout = 180_000
-
-            instanceFollowRedirects = true
-
-            requestMethod = "GET"
-
-            setRequestProperty(
-                "Authorization",
-                "Bearer $token"
-            )
-
-            setRequestProperty(
-                "User-Agent",
-                "KinoTTS-Studio-Android"
-            )
-
-            setRequestProperty(
-                "Cache-Control",
-                "no-cache"
-            )
+        var current = address
+        var redirects = 0
+        while (true) {
+            val url = URL(current)
+            require(url.protocol == "https") { "Odrzucono połączenie bez HTTPS: $current" }
+            val host = url.host.lowercase()
+            // Token Hugging Face wysyłamy tylko do huggingface.co, nigdy do hostów CDN z przekierowań.
+            val trusted = host == "huggingface.co" || host.endsWith(".huggingface.co")
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 30_000
+                readTimeout = 180_000
+                instanceFollowRedirects = false
+                requestMethod = "GET"
+                if (trusted) setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("User-Agent", "KinoTTS-Studio-Android")
+                setRequestProperty("Cache-Control", "no-cache")
+            }
+            val code = connection.responseCode
+            if (code in 300..399 && code != 304) {
+                val location = connection.getHeaderField("Location")
+                connection.disconnect()
+                require(location != null && redirects < 6) { "Zbyt wiele przekierowań albo brak adresu docelowego." }
+                current = URL(url, location).toString()
+                redirects++
+                continue
+            }
+            return connection
         }
     }
 

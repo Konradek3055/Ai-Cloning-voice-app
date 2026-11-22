@@ -84,7 +84,7 @@ object XtTsOnnxRuntime {
      * Uses one CPU thread pool per graph, with a conservative 1..4 thread cap.
      */
     fun openSessions(modelDir: File, numThreads: Int = 2, useNnapi: Boolean = false): XtTsOnnxSessions {
-        require(numThreads in 1..4) { "Liczba wątków XTTS musi mieścić się w zakresie 1–4." }
+        require(numThreads in 1..8) { "Liczba wątków XTTS musi mieścić się w zakresie 1–8." }
         require(modelDir.isDirectory) { "Brak katalogu modeli XTTS: ${modelDir.absolutePath}" }
 
         val conditioningFile = File(modelDir, "conditioning_encoder.onnx")

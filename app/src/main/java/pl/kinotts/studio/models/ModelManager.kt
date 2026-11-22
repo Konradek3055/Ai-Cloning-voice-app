@@ -11,6 +11,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /** Downloads, validates and installs model packs inside this app's private files directory. */
 class ModelManager(context: Context) {
@@ -20,6 +21,7 @@ class ModelManager(context: Context) {
     private val supertonicUrl =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" +
             "sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2"
+    private val supertonicSha256 = "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427"
 
     private val requiredFiles = listOf(
         "duration_predictor.int8.onnx", "text_encoder.int8.onnx",
@@ -58,6 +60,7 @@ class ModelManager(context: Context) {
                 if (response !in 200..299) error("Pobieranie modelu nie powiodło się: HTTP $response")
 
                 val total = connection.contentLengthLong
+                val digest = MessageDigest.getInstance("SHA-256")
                 connection.inputStream.use { input ->
                     FileOutputStream(archive).use { output ->
                         val buffer = ByteArray(256 * 1024)
@@ -67,6 +70,7 @@ class ModelManager(context: Context) {
                             if (count < 0) break
                             if (count == 0) continue
                             output.write(buffer, 0, count)
+                            digest.update(buffer, 0, count)
                             done += count
                             if (total > 0L) onProgress((done.toDouble() / total).toFloat().coerceIn(0f, 0.99f))
                         }
@@ -74,6 +78,10 @@ class ModelManager(context: Context) {
                     }
                 }
                 check(archive.isFile && archive.length() > 1024L) { "Pobrane archiwum jest puste lub uszkodzone" }
+                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                check(actualSha256 == supertonicSha256) {
+                    "Suma SHA-256 modelu Supertonic się nie zgadza - plik jest uszkodzony albo został zmieniony."
+                }
             } catch (e: Exception) {
                 archive.delete()
                 staging.deleteRecursively()

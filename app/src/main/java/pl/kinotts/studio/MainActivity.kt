@@ -44,6 +44,7 @@ import pl.kinotts.studio.security.HfTokenStore
 import pl.kinotts.studio.voices.VoiceProfile
 import pl.kinotts.studio.voices.VoiceProfileStore
 import pl.kinotts.studio.xtts.XttsSynthesizer
+import pl.kinotts.studio.background.KeepAlive
 import pl.kinotts.studio.xtts.XttsSamplingSettings
 import pl.kinotts.studio.storage.KinoStorage
 import java.io.File
@@ -83,7 +84,7 @@ private fun KinoTtsApp() {
     val analyzer = remember { AudioAnalyzer(context.applicationContext) }
     val profileStore = remember { VoiceProfileStore(context.applicationContext) }
     val supertonic = remember { SupertonicEngine(KinoStorage.outputDir(context).apply { mkdirs() }) }
-    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), KinoStorage.outputDir(context).apply { mkdirs() }, initialExecutionProvider = xttsExecutionProvider) }
+    val xttsRuntime = remember { XttsSynthesizer(xttsModels.modelDir(), KinoStorage.outputDir(context).apply { mkdirs() }, numThreads = xttsPreferences.getInt("xtts_threads", 4).coerceIn(1, 8), initialExecutionProvider = xttsExecutionProvider) }
 
     // KinoTTS_ADVANCED_SETTINGS_PATCH_V2
     val initialAppLanguage = remember {
@@ -110,6 +111,7 @@ private fun KinoTtsApp() {
     var xttsTopK by remember { mutableIntStateOf(xttsPreferences.getInt("xtts_top_k", 50).coerceIn(1, 100)) }
     var xttsTopP by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_top_p", 0.85f).coerceIn(0.1f, 1f)) }
     var xttsRepetitionPenalty by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_repetition_penalty_v2", 10f).coerceIn(1f, 20f)) }
+    var xttsThreads by remember { mutableIntStateOf(xttsPreferences.getInt("xtts_threads", 4).coerceIn(1, 8)) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
@@ -265,8 +267,10 @@ private fun KinoTtsApp() {
     DisposableEffect(Unit) {
         onDispose {
             player?.release()
-            supertonic.close()
-            xttsRuntime.close()
+            KeepAlive.runWhenIdle {
+                supertonic.close()
+                xttsRuntime.close()
+            }
         }
     }
 
@@ -598,8 +602,10 @@ private fun KinoTtsApp() {
                                     Button(
                                         onClick = {
                                             val selected = selectedXttsProfile
-                                            if (selected != null) scope.launch {
+                                            if (selected != null) KeepAlive.appScope.launch {
                                                 busy = true; xttsSynthesizing = true; progress = 0f; status = "Uruchamiam XTTS-v2…"
+                                                KeepAlive.begin(context, "Generuję głos XTTS…")
+                                                val synthStartedAt = System.nanoTime()
                                                 try {
                                                     computeBackendStatus = "XTTS: inicjalizacja backendu ${xttsExecutionProvider.uppercase(Locale.ROOT)}…"
                                                     withContext(Dispatchers.IO) { xttsRuntime.open() }
@@ -615,10 +621,12 @@ private fun KinoTtsApp() {
                                                         }
                                                     }
                                                     output = wav
-                                                    status = "XTTS wygenerował WAV: ${wav.name}"
+                                                    val audioSeconds = ((wav.length() - 44L).coerceAtLeast(0L)) / 2.0 / 24000.0
+                                                    val elapsedSeconds = (System.nanoTime() - synthStartedAt) / 1e9
+                                                    status = "XTTS wygenerował WAV: ${wav.name} (${formatNumber(audioSeconds.toFloat())} s mowy w ${formatNumber(elapsedSeconds.toFloat())} s, wątki: $xttsThreads)"
                                                 } catch (e: Exception) {
                                                     status = "Błąd XTTS: ${e.message ?: e::class.java.simpleName}"
-                                                } finally { xttsSynthesizing = false; busy = false }
+                                                } finally { xttsSynthesizing = false; busy = false; KeepAlive.end(context) }
                                             }
                                         },
                                         enabled = !busy && xttsInstalled && selectedXttsProfile != null && text.isNotBlank(),
@@ -672,8 +680,9 @@ private fun KinoTtsApp() {
                         if (engine == "Supertonic 3") {
                             Button(
                                 onClick = {
-                                    scope.launch {
+                                    KeepAlive.appScope.launch {
                                         busy = true
+                                        KeepAlive.begin(context, "Generuję mowę Supertonic…")
                                         progress = 0f
                                         status = "Sprawdzam model Supertonic 3…"
                                         try {
@@ -698,6 +707,7 @@ private fun KinoTtsApp() {
                                             status = "Błąd syntezy: ${e.message ?: e::class.java.simpleName}"
                                         } finally {
                                             busy = false
+                                            KeepAlive.end(context)
                                         }
                                     }
                                 },
@@ -783,11 +793,12 @@ private fun KinoTtsApp() {
                                 Text(if (models.isSupertonicInstalled()) "Pobrany i zweryfikowany w Documents/KinoTTS/Models" else "Niepobrany — pobierze się przy pierwszej syntezie")
                                 Button(
                                     onClick = {
-                                        scope.launch {
+                                        KeepAlive.appScope.launch {
                                             busy = true
                                             progress = 0f
                                             progressEta = "Szacowanie czasu…"
                                             status = "Pobieram i weryfikuję Supertonic 3…"
+                                            KeepAlive.begin(context, "Pobieram model Supertonic…")
                                             supertonicModelStatus = "Pobieranie modelu…"
                                             val startedAt = System.currentTimeMillis()
                                             try {
@@ -808,6 +819,7 @@ private fun KinoTtsApp() {
                                                 status = "Błąd pobierania: ${e.message ?: e::class.java.simpleName}"
                                             } finally {
                                                 busy = false
+                                                KeepAlive.end(context)
                                             }
                                         }
                                     },
@@ -879,9 +891,10 @@ private fun KinoTtsApp() {
 
                                         val tokenForDownload = hfToken.trim()
 
-                                        scope.launch {
+                                        KeepAlive.appScope.launch {
 
                                             busy = true
+                                            KeepAlive.begin(context, "Pobieram model XTTS…")
                                             progress = 0f
                                             xttsGraphInfo = ""
 
@@ -923,6 +936,7 @@ private fun KinoTtsApp() {
 
                                             } finally {
                                                 busy = false
+                                                KeepAlive.end(context)
                                             }
                                         }
                                     },
@@ -1076,6 +1090,8 @@ private fun KinoTtsApp() {
                                 Slider(value = xttsTopP, onValueChange = { xttsTopP = it; xttsPreferences.edit().putFloat("xtts_top_p", it).apply() }, valueRange = 0.1f..1.0f)
                                 Text("Repetition penalty: ${formatNumber(xttsRepetitionPenalty)}")
                                 Slider(value = xttsRepetitionPenalty, onValueChange = { xttsRepetitionPenalty = it; xttsPreferences.edit().putFloat("xtts_repetition_penalty_v2", it).apply() }, valueRange = 1.0f..20.0f)
+                                Text("${tr("Wątki CPU XTTS", "XTTS CPU threads")}: $xttsThreads")
+                                Slider(value = xttsThreads.toFloat(), onValueChange = { xttsThreads = it.toInt().coerceIn(1, 8); xttsPreferences.edit().putInt("xtts_threads", xttsThreads).apply() }, onValueChangeFinished = { if (!busy) xttsRuntime.setThreads(xttsThreads) }, enabled = !busy, valueRange = 1f..8f, steps = 6)
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text(tr("Język syntezy XTTS", "XTTS synthesis language"))
                                 var xttsSettingsLangExpanded by remember { mutableStateOf(false) }

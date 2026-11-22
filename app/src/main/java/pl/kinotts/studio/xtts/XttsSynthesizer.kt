@@ -80,10 +80,11 @@ data class XttsGptConfig(
 class XttsSynthesizer(
     private val modelDir: File,
     private val outputDir: File,
-    private val numThreads: Int = 2,
+    numThreads: Int = 4,
     initialExecutionProvider: String = "cpu"
 ) : Closeable {
     private val cancelled = AtomicBoolean(false)
+    @Volatile private var threads: Int = numThreads.coerceIn(1, 8)
     private val loadLock = Any()
     private val runLock = Any()
     private inline fun <T> exclusive(block: () -> T): T =
@@ -146,25 +147,40 @@ class XttsSynthesizer(
             env = XtTsOnnxRuntime.environment()
             sessions = if (requestedExecutionProvider == "nnapi") {
                 try {
-                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = true).also {
+                    XtTsOnnxRuntime.openSessions(modelDir, threads, useNnapi = true).also {
                         executionProviderStatus = "NNAPI EP zarejestrowany — Android/sterownik wybiera sprzęt; ORT nie rozróżnia tu GPU i NPU"
                     }
                 } catch (error: Exception) {
-                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                    XtTsOnnxRuntime.openSessions(modelDir, threads, useNnapi = false).also {
                         executionProviderStatus = "CPU fallback — NNAPI nie uruchomiło sesji: ${(error.message ?: error.javaClass.simpleName).take(120)}"
                     }
                 } catch (error: LinkageError) {
-                    XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                    XtTsOnnxRuntime.openSessions(modelDir, threads, useNnapi = false).also {
                         executionProviderStatus = "CPU fallback — brak biblioteki NNAPI: ${(error.message ?: error.javaClass.simpleName).take(120)}"
                     }
                 }
             } else {
-                XtTsOnnxRuntime.openSessions(modelDir, numThreads, useNnapi = false).also {
+                XtTsOnnxRuntime.openSessions(modelDir, threads, useNnapi = false).also {
                     executionProviderStatus = "CPU — aktywny"
                 }
             }
             validateGraphContract(sessions!!)
             outputDir.mkdirs()
+        }
+    }
+
+    /** Zmienia liczbę wątków CPU (1-8); modele załadują się ponownie przy następnej syntezie. */
+    fun setThreads(count: Int) {
+        val target = count.coerceIn(1, 8)
+        if (threads == target) return
+        cancelled.set(true)
+        exclusive {
+            check(!closed) { "Silnik XTTS został zamknięty." }
+            if (threads == target) return
+            unloadLocked()
+            threads = target
+            executionProviderStatus =
+                if (requestedExecutionProvider == "nnapi") "NNAPI — oczekuje na załadowanie modelu" else "CPU — gotowy"
         }
     }
 
