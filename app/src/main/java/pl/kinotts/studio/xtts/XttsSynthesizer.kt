@@ -50,13 +50,13 @@ data class XttsSamplingSettings(
     val temperature: Float = 0.75f,
     val topK: Int = 50,
     val topP: Float = 0.85f,
-    val repetitionPenalty: Float = 1.1f
+    val repetitionPenalty: Float = 10.0f
 ) {
     fun validated() = copy(
         temperature = temperature.takeIf { it.isFinite() }?.coerceIn(0.1f, 2.0f) ?: 0.75f,
         topK = topK.coerceIn(1, 100),
         topP = topP.takeIf { it.isFinite() }?.coerceIn(0.1f, 1.0f) ?: 0.85f,
-        repetitionPenalty = repetitionPenalty.takeIf { it.isFinite() }?.coerceIn(1.0f, 2.0f) ?: 1.1f
+        repetitionPenalty = repetitionPenalty.takeIf { it.isFinite() }?.coerceIn(1.0f, 20.0f) ?: 10.0f
     )
 }
 
@@ -228,18 +228,36 @@ class XttsSynthesizer(
         onProgress(XttsProgress(0.04f, "Odczyt próbki głosu"))
         val audio = Wav.readMonoPcm16(referenceWav)
         require(audio.samples.size >= audio.sampleRate / 2) { "Próbka głosu jest za krótka (minimum 0,5 s)." }
-        val audio22 = Dsp.resample(audio.samples, audio.sampleRate, 22050).let { if (it.size > 22050 * 6) it.copyOf(22050 * 6) else it }
+        // Maks. 30 s próbki (jak max_ref_length w Coqui XTTS)
+        val limited = if (audio.samples.size > audio.sampleRate * 30) audio.samples.copyOf(audio.sampleRate * 30) else audio.samples
+        val audio22 = Dsp.resample(limited, audio.sampleRate, 22050)
         require(audio22.size >= 2048) { "Próbka jest zbyt krótka do ekstrakcji cech." }
         onProgress(XttsProgress(0.10f, "Obliczanie cech conditioning"))
-        val mel = Dsp.conditioningMel(audio22, melNorms)
-        ensureActive()
-        onProgress(XttsProgress(0.20f, "Encoder conditioning"))
-        val cond = runFloatGraph(sessions!!.conditioningEncoder, "mel_spectrogram", mel, longArrayOf(1, 80, (mel.size / 80).toLong()))
-        require(cond.size == 32 * 1024) { "Conditioning encoder zwrócił ${cond.size} wartości zamiast ${32 * 1024}." }
+        // Jak Xtts.get_gpt_cond_latents: fragmenty po 6 s, pomijamy < 0,33 s, wynik = średnia latentów
+        val chunkSamples = 22050 * 6
+        val minSamples = max(2048, (22050 * 0.33f).toInt())
+        val cond = FloatArray(32 * 1024)
+        var chunkCount = 0
+        var chunkStart = 0
+        while (chunkStart < audio22.size) {
+            val chunkEnd = min(audio22.size, chunkStart + chunkSamples)
+            if (chunkEnd - chunkStart >= minSamples) {
+                ensureActive()
+                onProgress(XttsProgress(0.10f + 0.14f * (chunkStart.toFloat() / audio22.size), "Encoder conditioning"))
+                val mel = Dsp.conditioningMel(audio22.copyOfRange(chunkStart, chunkEnd), melNorms)
+                val latent = runFloatGraph(sessions!!.conditioningEncoder, "mel_spectrogram", mel, longArrayOf(1, 80, (mel.size / 80).toLong()))
+                require(latent.size == 32 * 1024) { "Conditioning encoder zwrócił ${latent.size} wartości zamiast ${32 * 1024}." }
+                for (i in cond.indices) cond[i] += latent[i]
+                chunkCount++
+            }
+            chunkStart += chunkSamples
+        }
+        require(chunkCount > 0) { "Próbka jest zbyt krótka do ekstrakcji cech." }
+        if (chunkCount > 1) for (i in cond.indices) cond[i] /= chunkCount.toFloat()
 
         ensureActive()
         onProgress(XttsProgress(0.26f, "Ekstrakcja embeddingu mówcy"))
-        val audio16 = Dsp.resample(audio.samples, audio.sampleRate, 16000)
+        val audio16 = Dsp.resample(limited, audio.sampleRate, 16000)
         val speakerMel = Dsp.speakerMel(audio16)
         val speaker = runFloatGraph(sessions!!.speakerEncoder, "mel_spec", speakerMel, longArrayOf(1, 64, (speakerMel.size / 64).toLong()))
         require(speaker.size == 512) { "Speaker encoder zwrócił ${speaker.size} wartości zamiast 512." }
@@ -351,7 +369,7 @@ class XttsSynthesizer(
                 ensureActive()
                 val selected = sample(logits, history, settings)
                 if (selected == config.stopAudio) break
-                if (selected !in 0 until 1024) error("GPT wygenerował nieprawidłowy kod audio: $selected")
+                if (selected !in 0 until config.audioTokens) error("GPT wygenerował nieprawidłowy kod audio: $selected")
                 generatedIds.add(selected)
                 latentVectors.add(hidden.copyOf())
                 history.add(selected)
@@ -898,8 +916,9 @@ private object Dsp {
         else if (mel < 15.0) 200.0 * mel / 3.0 else 1000.0 * 6.4.pow((mel - 15.0) / 27.0)
 
     private fun buildMelFilters(nfft: Int, sr: Int, nMels: Int, fMin: Float, fMax: Float, slaney: Boolean): DoubleArray {
-        val low = hzToMel(fMin.toDouble(), slaney); val high = hzToMel(fMax.toDouble(), slaney)
-        val points = DoubleArray(nMels + 2) { i -> melToHz(low + (high - low) * i / (nMels + 1), slaney) }
+        // torchaudio.MelSpectrogram: mel_scale="htk" zawsze; norm="slaney" zmienia tylko normalizację pola filtra.
+        val low = hzToMel(fMin.toDouble(), false); val high = hzToMel(fMax.toDouble(), false)
+        val points = DoubleArray(nMels + 2) { i -> melToHz(low + (high - low) * i / (nMels + 1), false) }
         val bins = nfft / 2 + 1
         val result = DoubleArray(bins * nMels)
         for (f in 0 until bins) {

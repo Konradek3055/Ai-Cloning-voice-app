@@ -109,7 +109,7 @@ private fun KinoTtsApp() {
     var xttsTemperature by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_temperature", 0.75f).coerceIn(0.1f, 2f)) }
     var xttsTopK by remember { mutableIntStateOf(xttsPreferences.getInt("xtts_top_k", 50).coerceIn(1, 100)) }
     var xttsTopP by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_top_p", 0.85f).coerceIn(0.1f, 1f)) }
-    var xttsRepetitionPenalty by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_repetition_penalty", 1.1f).coerceIn(1f, 2f)) }
+    var xttsRepetitionPenalty by remember { mutableFloatStateOf(xttsPreferences.getFloat("xtts_repetition_penalty_v2", 10f).coerceIn(1f, 20f)) }
 
     var screen by remember { mutableStateOf(Screen.Studio) }
     var engine by remember { mutableStateOf("Supertonic 3") }
@@ -1075,7 +1075,7 @@ private fun KinoTtsApp() {
                                 Text("Top-P: ${formatNumber(xttsTopP)}")
                                 Slider(value = xttsTopP, onValueChange = { xttsTopP = it; xttsPreferences.edit().putFloat("xtts_top_p", it).apply() }, valueRange = 0.1f..1.0f)
                                 Text("Repetition penalty: ${formatNumber(xttsRepetitionPenalty)}")
-                                Slider(value = xttsRepetitionPenalty, onValueChange = { xttsRepetitionPenalty = it; xttsPreferences.edit().putFloat("xtts_repetition_penalty", it).apply() }, valueRange = 1.0f..2.0f)
+                                Slider(value = xttsRepetitionPenalty, onValueChange = { xttsRepetitionPenalty = it; xttsPreferences.edit().putFloat("xtts_repetition_penalty_v2", it).apply() }, valueRange = 1.0f..20.0f)
                                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Text(tr("Język syntezy XTTS", "XTTS synthesis language"))
                                 var xttsSettingsLangExpanded by remember { mutableStateOf(false) }
