@@ -35,7 +35,6 @@ This project is created with help from ChatGPT and Claude.
 
 ## Build
 
-GitHub Actions builds an ARM64 debug APK on every push (artifact "KinoTTS-Studio-debug-APK-arm64").
 Local build: JDK 17, Android SDK 35, NDK 29, Rust + `cargo-ndk`, then `gradle :app:assembleDebug`.
 
 ## Responsible use
