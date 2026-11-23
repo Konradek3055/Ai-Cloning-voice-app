@@ -85,6 +85,16 @@ class XttsSynthesizer(
 ) : Closeable {
     private val cancelled = AtomicBoolean(false)
     @Volatile private var threads: Int = numThreads.coerceIn(1, 8)
+
+    /** Podział czasu ostatniej syntezy (ładowanie, analiza głosu, GPT, vocoder) - do diagnozy wydajności. */
+    @Volatile var lastTimings: String = ""
+        private set
+    private var prefillNanos = 0L
+    private var stepNanos = 0L
+    private var stepCount = 0
+    private var vocoderNanos = 0L
+
+    private fun seconds(nanos: Long): String = String.format(Locale.US, "%.1f", nanos / 1e9)
     private val loadLock = Any()
     private val runLock = Any()
     private inline fun <T> exclusive(block: () -> T): T =
@@ -291,9 +301,15 @@ class XttsSynthesizer(
     ): File {
         return synchronized(runLock) {
             cancelled.set(false)
+            val loadStart = System.nanoTime()
             open()
+            val loadNanos = System.nanoTime() - loadStart
+            val voiceStart = System.nanoTime()
             val voice = createVoice(referenceWav) { p -> onProgress(p.fraction) }
-            synthesize(text, language, voice, speed, sampling) { p -> onProgress(p) }
+            val voiceNanos = System.nanoTime() - voiceStart
+            val file = synthesize(text, language, voice, speed, sampling) { p -> onProgress(p) }
+            lastTimings = "ładowanie modeli ${seconds(loadNanos)} s, analiza głosu ${seconds(voiceNanos)} s, " + lastTimings
+            file
         }
     }
 
@@ -312,6 +328,10 @@ class XttsSynthesizer(
     ): File = synchronized(runLock) {
         cancelled.set(false)
         open()
+        prefillNanos = 0L
+        stepNanos = 0L
+        stepCount = 0
+        vocoderNanos = 0L
         require(text.isNotBlank()) { "Wpisz tekst do syntezy." }
         require(speed in 0.5f..2f) { "Tempo musi być w zakresie 0,5–2,0." }
         require(voice.conditioning.size == 32 * 1024 && voice.speakerEmbedding.size == 512) { "Nieprawidłowy profil głosu." }
@@ -345,6 +365,11 @@ class XttsSynthesizer(
         ensureActive()
         val outFile = File(outputDir, "xtts_${System.currentTimeMillis()}.wav")
         Wav.writePcm16(outFile, waveform, 24000)
+        val avgStepMs = if (stepCount > 0) stepNanos / 1e6 / stepCount else 0.0
+        val tokensPerSecond = if (stepNanos > 0L) stepCount / (stepNanos / 1e9) else 0.0
+        lastTimings = "GPT: start ${seconds(prefillNanos)} s + $stepCount kroków po " +
+            String.format(Locale.US, "%.0f", avgStepMs) + " ms (" +
+            String.format(Locale.US, "%.1f", tokensPerSecond) + " tok/s, potrzeba ≥21,5), vocoder ${seconds(vocoderNanos)} s"
         onProgress(1f)
         outFile
     }
@@ -375,7 +400,9 @@ class XttsSynthesizer(
 
         var cache: GptCache? = null
         try {
+            val prefillStart = System.nanoTime()
             var step = runGpt(prefix, prefixLength, null, prefixLength)
+            prefillNanos += System.nanoTime() - prefillStart
             cache = step.cache
             var cacheLength = prefixLength
             var logits = step.logits
@@ -400,7 +427,10 @@ class XttsSynthesizer(
                 melPosition++
 
                 val previous = cache
+                val stepStart = System.nanoTime()
                 step = runGpt(nextEmbedding, 1, previous, cacheLength + 1)
+                stepNanos += System.nanoTime() - stepStart
+                stepCount++
                 cache = step.cache
                 previous?.close()
                 cacheLength++
@@ -415,7 +445,9 @@ class XttsSynthesizer(
         ensureActive()
         onProgress(0.92f)
         val latents = timeScale(latentVectors, speed)
+        val vocoderStart = System.nanoTime()
         val waveform = runVocoder(latents, voice.speakerEmbedding)
+        vocoderNanos += System.nanoTime() - vocoderStart
         ensureActive()
         require(waveform.isNotEmpty()) { "HiFi-GAN zwrócił pusty dźwięk." }
         onProgress(1f)

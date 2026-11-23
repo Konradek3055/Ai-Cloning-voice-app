@@ -623,7 +623,7 @@ private fun KinoTtsApp() {
                                                     output = wav
                                                     val audioSeconds = ((wav.length() - 44L).coerceAtLeast(0L)) / 2.0 / 24000.0
                                                     val elapsedSeconds = (System.nanoTime() - synthStartedAt) / 1e9
-                                                    status = "XTTS wygenerował WAV: ${wav.name} (${formatNumber(audioSeconds.toFloat())} s mowy w ${formatNumber(elapsedSeconds.toFloat())} s, wątki: $xttsThreads)"
+                                                    status = "XTTS wygenerował WAV: ${wav.name} (${formatNumber(audioSeconds.toFloat())} s mowy w ${formatNumber(elapsedSeconds.toFloat())} s, wątki: $xttsThreads)\n${xttsRuntime.lastTimings}"
                                                 } catch (e: Exception) {
                                                     status = "Błąd XTTS: ${e.message ?: e::class.java.simpleName}"
                                                 } finally { xttsSynthesizing = false; busy = false; KeepAlive.end(context) }
